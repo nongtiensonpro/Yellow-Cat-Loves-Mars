@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<title>Yellow Cat Loves Mars — Mèo Vàng trên Sao Hỏa</title>
+<meta name="description" content="Mèo Vàng đạp xe trên Sao Hỏa — website tĩnh khám phá địa hình Sao Hỏa bằng WebGL. Tự do di chuyển bằng xe đạp, xe máy và rover trên thế giới procedural lấy cảm hứng từ dữ liệu NASA."/>
+<meta name="theme-color" content="#c1440e"/>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🪐</text></svg>"/>
+<link rel="manifest" href="./manifest.json"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<link rel="stylesheet" href="./styles/main.css"/>
+<script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+
+<div id="loading">
+  <div class="loader">
+    <div style="font-size:32px">🪐🐱</div>
+    <h2>Yellow Cat Loves Mars</h2>
+    <p id="load-text">Đang đánh thức Mèo Vàng và sưởi ấm Sao Hỏa...</p>
+    <div class="bar"><i id="load-bar"></i></div>
+    <div style="margin-top:10px;font-size:11px;color:rgba(255,255,255,0.5);font-family:'JetBrains Mono',monospace" id="load-pct">0%</div>
+  </div>
+</div>
+
+<div id="canvas-wrap"><canvas id="canvas"></canvas></div>
+
+<!-- HUD -->
+<div id="hud">
+  <div class="hud-top">
+    <div class="hud-left">
+      <div class="pill"><span class="dot"></span> <span><b id="hud-biome">Arcadia Planitia</b> · <span id="hud-coord">0, 0</span></span></div>
+      <div class="pill">🐾 <b id="hud-paws">0</b> <span style="color:var(--muted)">Dấu chân</span> &nbsp;·&nbsp; <span id="hud-speed">0</span> km/h</div>
+      <div class="pill" id="hud-vehicle-pill">🚙 <span id="hud-vehicle-name">Rover</span></div>
+    </div>
+    <div class="minimap-wrap" id="minimap-wrap" title="Bản đồ quỹ đạo — click để thu phóng">
+      <canvas id="minimap" width="168" height="168"></canvas>
+      <div class="minimap-dot" id="mini-dot"></div>
+      <div class="minimap-label">ORBIT MAP · M</div>
+    </div>
+  </div>
+  <div class="hud-hint" id="hud-hint">
+    <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> di chuyển · <kbd>Shift</kbd> tăng tốc · <kbd>C</kbd> đổi camera · <kbd>P</kbd> Photo
+  </div>
+  <div class="hud-bottom">
+    <div class="hud-controls">
+      <button class="ctrl-btn" id="btn-audio" title="Nhạc (click để bật/tắt)">🔇</button>
+      <button class="ctrl-btn" id="btn-journal" title="Nhật ký (J)">📖</button>
+      <button class="ctrl-btn" id="btn-gallery" title="Bộ sưu tập (G)">🖼️</button>
+      <button class="ctrl-btn" id="btn-map" title="Bản đồ (M)">🛰️</button>
+      <button class="ctrl-btn" id="btn-photo" title="Photo mode (P)">📸</button>
+      <button class="ctrl-btn" id="btn-light" title="Đổi giờ (L)">🌅</button>
+      <button class="ctrl-btn" id="btn-help" title="Trợ giúp (H)">?</button>
+    </div>
+    <div class="vehicle-switch" id="vehicle-switch">
+      <button class="v-btn" data-v="bike"><b>🚲</b><span>Xe đạp</span><small>chill 12 km/h</small></button>
+      <button class="v-btn" data-v="moto"><b>🏍️</b><span>Xe máy</span><small>phiêu 42 km/h</small></button>
+      <button class="v-btn active" data-v="rover"><b>🚙</b><span>Rover</span><small>bền 28 km/h</small></button>
+    </div>
+  </div>
+</div>
+
+<div id="joystick"><div class="joy-base"></div><div class="joy-stick" id="joy-stick"></div></div>
+
+<div id="photo-bar">
+  <span style="font-size:12px;letter-spacing:0.08em;font-weight:800">📸 PHOTO MODE</span>
+  <span style="font-size:11px;color:rgba(255,255,255,0.7)">Kéo chuột xoay · Cuộn zoom · </span>
+  <button class="ctrl-btn" id="btn-shot" style="width:auto;padding:0 12px;height:32px;border-radius:999px;font-size:12px;font-weight:800">Chụp ảnh</button>
+  <button class="ctrl-btn" id="btn-photo-exit" style="width:auto;padding:0 12px;height:32px;border-radius:999px;font-size:12px">Thoát (Esc)</button>
+</div>
+
+<div id="toast">
+  <div style="font-size:22px" id="toast-icon">🏜️</div>
+  <h4 id="toast-title">Khám phá mới!</h4>
+  <p id="toast-desc">Mô tả</p>
+  <button id="toast-close">Tuyệt vời!</button>
+</div>
+
+<!-- Landing -->
+<div class="overlay" id="overlay-landing">
+  <div class="card-landing">
+    <div>
+      <div class="badge">✦ STATIC WEBSITE · WebGL · PROCEDURAL · NO BACKEND</div>
+      <h1 class="title">Mèo Vàng<br><span>yêu Sao Hỏa</span> 🪐</h1>
+      <p class="desc">
+        Một website tĩnh biến thành thế giới mở mini trên hành tinh đỏ. Tự do đạp xe, lướt xe máy hay lái rover qua
+        <b style="color:#fff">Olympus Mons, Valles Marineris</b> và đồng bằng Arcadia — địa hình lấy cảm hứng từ dữ liệu <b style="color:#fff">NASA MOLA & HiRISE</b>, được thổi hồn bằng procedural generation.
+        Không cần cài đặt, không cần đăng nhập.
+      </p>
+      <div class="stats">
+        <div class="stat"><b>3</b><small>PHƯƠNG TIỆN</small></div>
+        <div class="stat"><b>5</b><small>VÙNG ĐẤT</small></div>
+        <div class="stat"><b>∞</b><small>KHÁM PHÁ</small></div>
+        <div class="stat"><b>60 FPS</b><small>MỤC TIÊU</small></div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="cta" id="btn-start">🚀 Bắt đầu hành trình →</button>
+        <button class="cta secondary" id="btn-trailer">Xem bản đồ quỹ đạo</button>
+      </div>
+      <div style="margin-top:12px;font-size:11px;color:rgba(255,255,255,0.55);line-height:1.5">
+        Mẹo: Dùng <b style="color:rgba(255,255,255,0.85)">WASD</b> + chuột để di chuyển. Trên điện thoại dùng joystick ảo góc trái.
+        Nhấn <b style="color:rgba(255,255,255,0.85)">P</b> để chụp ảnh mang về.
+      </div>
+    </div>
+    <div class="hero-visual">
+      <div class="orbit"></div>
+      <div class="orbit orbit2"></div>
+      <div class="mars-mini"></div>
+      <div class="cat-on-mars"><span class="cat-icon">🐱</span> Mèo Vàng đang chờ ở Arcadia...</div>
+    </div>
+  </div>
+</div>
+
+<!-- Vehicle Select -->
+<div class="overlay hidden" id="overlay-vehicle">
+  <div style="width:min(860px,100%);background:linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.015));border:1px solid var(--border);border-radius:22px;padding:20px;box-shadow:0 30px 80px rgba(0,0,0,0.55);backdrop-filter:blur(18px)">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div>
+        <div class="badge">CHỌN PHƯƠNG TIỆN</div>
+        <h2 style="font-family:'Baloo 2',cursive;font-size:28px;margin-top:6px">Hôm nay Mèo đi bằng gì?</h2>
+        <p style="color:var(--muted);font-size:13px;margin-top:4px">Có thể đổi bất kỳ lúc nào bằng nút ở góc dưới phải.</p>
+      </div>
+      <button class="ctrl-btn" id="btn-vehicle-close" style="width:40px;height:40px">✕</button>
+    </div>
+    <div class="vehicle-grid">
+      <div class="v-card" data-pick="bike">
+        <div class="icon">🚲</div><b>Xe đạp Mèo Vàng</b>
+        <p>Chậm mà chill. Nghe tiếng xích kêu, giỏ mây chở bình oxy hình cá. Hợp nhất cho bình minh Arcadia.</p>
+        <div class="v-specs"><span>12 km/h</span><span>Nhẹ</span><span>Giỏ cá 🐟</span></div>
+      </div>
+      <div class="v-card" data-pick="moto">
+        <div class="icon">🏍️</div><b>Xe máy Sao Hỏa</b>
+        <p>Lướt qua hẻm Valles Marineris, để lại vệt bụi dài. Có thể bốc đầu nhẹ khi leo dốc.</p>
+        <div class="v-specs"><span>42 km/h</span><span>Linh hoạt</span><span>Vệt bụi</span></div>
+      </div>
+      <div class="v-card active" data-pick="rover">
+        <div class="icon">🚙</div><b>Rover Thám Hiểm</b>
+        <p>Bám đường tốt, đèn pha rọi bão bụi, cabin kính nhìn thấy Mèo đội mũ phi hành.</p>
+        <div class="v-specs"><span>28 km/h</span><span>Bền</span><span>Đèn pha</span></div>
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:16px;justify-content:flex-end;flex-wrap:wrap">
+      <button class="cta secondary" id="btn-pick-cancel">Quay lại</button>
+      <button class="cta" id="btn-pick-go">Xuất phát →</button>
+    </div>
+  </div>
+</div>
+
+<!-- Orbit Map -->
+<div class="overlay hidden" id="overlay-map">
+  <div style="width:min(980px,100%);background:#0f0a08;border:1px solid var(--border);border-radius:22px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,0.6)">
+    <div style="padding:16px 18px;display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--border)">
+      <div><div class="badge">ORBIT MAP</div><h2 style="font-family:'Baloo 2',cursive;font-size:22px;margin-top:4px">Bản đồ quỹ đạo</h2></div>
+      <button class="ctrl-btn" id="btn-map-close">✕</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1.35fr 0.75fr;gap:0">
+      <div style="position:relative;background:#120a06;min-height:380px">
+        <canvas id="bigmap" width="640" height="520" style="width:100%;height:auto;display:block"></canvas>
+        <div style="position:absolute;bottom:10px;left:10px;background:rgba(0,0,0,0.6);border:1px solid rgba(255,255,255,0.12);padding:6px 10px;border-radius:999px;font-size:11px">Click để dịch chuyển nhanh · Kéo để xem</div>
+      </div>
+      <div style="padding:14px;border-left:1px solid var(--border);background:linear-gradient(180deg, rgba(255,255,255,0.03), transparent)">
+        <div style="font-size:11px;letter-spacing:0.1em;color:var(--muted);font-weight:800">CÁC VÙNG ĐẤT</div>
+        <div id="biome-list" style="margin-top:10px;display:flex;flex-direction:column;gap:8px"></div>
+        <div style="margin-top:14px;padding:10px;background:rgba(255,204,51,0.08);border:1px solid rgba(255,204,51,0.2);border-radius:12px">
+          <div style="font-weight:800;font-size:12px;color:var(--accent)">🐾 Nhật ký Mèo Vàng</div>
+          <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-top:4px" id="journal">Đã đi <b style="color:#fff" id="j-dist">0.0</b> km · Nhặt <b style="color:#fff" id="j-paws">0</b> dấu chân · Thăm <b style="color:#fff" id="j-biomes">0</b> vùng</div>
+        </div>
+        <button class="cta" style="width:100%;justify-content:center;margin-top:12px" id="btn-map-go">Dịch chuyển tới đây</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- Journal + Gallery Sheet -->
+<div class="sheet" id="sheet-journal" aria-hidden="true">
+  <div class="sheet-card">
+    <div class="sheet-head">
+      <div><div class="badge">NHẬT KÝ MÈO VÀNG</div><h2 style="font-family:'Baloo 2',cursive;font-size:22px;margin-top:4px">Hành trình trên Sao Hỏa</h2></div>
+      <button class="ctrl-btn" id="btn-journal-close">✕</button>
+    </div>
+    <div class="sheet-body">
+      <div class="sheet-tabs">
+        <button class="tab active" data-tab="j-overview">Tổng quan</button>
+        <button class="tab" data-tab="j-cards">Thẻ khám phá</button>
+        <button class="tab" data-tab="j-stats">Thống kê</button>
+      </div>
+      <div id="j-tab-overview">
+        <div class="journal-grid">
+          <div class="j-card">
+            <h3>🐾 Hôm nay Mèo đã…</h3>
+            <p id="j-summary">Mèo vừa đặt chân lên Arcadia. Hãy đi vài bước để nhật ký cập nhật nhé!</p>
+            <div class="j-stat" id="j-stat-row">
+              <span>🛣️ <b id="j-dist2">0.0</b> km</span>
+              <span>🐾 <b id="j-paws2">0</b>/18 dấu chân</span>
+              <span>🗺️ <b id="j-biomes2">0</b>/5 vùng</span>
+              <span>📖 <b id="j-cards2">0</b>/12 thẻ</span>
+              <span>🖼️ <b id="j-photos2">0</b> ảnh</span>
+              <span>⏱️ <b id="j-time2">0</b> phút</span>
+            </div>
+            <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+              <button class="cta secondary" id="btn-journal-share" style="padding:10px 14px;font-size:13px">📤 Chia sẻ hành trình</button>
+              <button class="ctrl-btn" id="btn-journal-reset" title="Xóa tiến trình" style="width:auto;padding:0 12px;border-radius:999px;font-size:12px">↺ Đặt lại</button>
+            </div>
+          </div>
+          <div class="j-card">
+            <h3>📡 Trạng thái</h3>
+            <p id="j-status">PWA: đang kiểm tra… · Audio: tắt · Offline: chưa sẵn sàng</p>
+            <div style="margin-top:10px" class="audio-pill">
+              <span style="font-size:12px;color:var(--muted)">🔈 Nhạc</span>
+              <input type="range" id="vol-range" min="0" max="100" value="42"/>
+              <span style="font-size:11px;color:var(--muted)" id="vol-label">42%</span>
+            </div>
+            <p style="margin-top:8px;font-size:11px;color:rgba(255,255,255,0.5)">Nhạc được tổng hợp bằng Web Audio — đổi theo vùng & tốc độ. Bật sau khi click “Bắt đầu”.</p>
+          </div>
+        </div>
+      </div>
+      <div id="j-tab-cards" style="display:none">
+        <div id="j-cards-grid" style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px"></div>
+      </div>
+      <div id="j-tab-stats" style="display:none">
+        <div class="j-card"><h3>📊 Chi tiết</h3><p id="j-stats-text">—</p></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="sheet" id="sheet-gallery" aria-hidden="true">
+  <div class="sheet-card">
+    <div class="sheet-head">
+      <div><div class="badge">BỘ SƯU TẬP</div><h2 style="font-family:'Baloo 2',cursive;font-size:22px;margin-top:4px">Ảnh Sao Hỏa của Mèo</h2></div>
+      <button class="ctrl-btn" id="btn-gallery-close">✕</button>
+    </div>
+    <div class="sheet-body">
+      <div id="gallery-grid" class="gallery-grid"></div>
+      <div id="gallery-empty" class="g-empty" style="display:none">Chưa có ảnh nào. Nhấn <b>P</b> để vào Photo Mode và bấm <b>Chụp ảnh</b> nhé! 📸</div>
+      <p style="margin-top:10px;font-size:11px;color:rgba(255,255,255,0.5)">Lưu tối đa 30 ảnh (IndexedDB). Ảnh lưu kèm tọa độ & vùng. Dùng nút “Chia sẻ” để gửi tọa độ.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Discovery Card Overlay -->
+<div class="overlay hidden" id="overlay-discovery">
+  <div class="discovery-card">
+    <div class="discovery-hero"><span class="d-icon" id="d-icon">🏜️</span><div style="position:absolute;bottom:10px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.15);padding:6px 10px;border-radius:999px;font-size:11px;color:rgba(255,255,255,0.9)" id="d-biome">Arcadia Planitia</div></div>
+    <div class="discovery-body">
+      <h4 id="d-title">Tiêu đề</h4>
+      <div class="d-fact" id="d-fact">Fact</div>
+      <div class="d-cat"><span>🐱</span><p style="font-size:12px;line-height:1.6;color:var(--muted)" id="d-cat">Mèo nói…</p></div>
+      <div style="margin-top:8px;font-size:11px;color:rgba(255,255,255,0.45)" id="d-earth">Nếu ở Trái Đất…</div>
+      <div class="discovery-actions">
+        <button class="cta secondary" id="btn-discovery-close">Đóng</button>
+        <button class="cta" id="btn-discovery-ok">Đã hiểu ✨</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="lightbox" id="lightbox"><img id="lightbox-img" alt="Ảnh Sao Hỏa"/><button class="ctrl-btn" id="btn-lightbox-close" style="position:absolute;top:14px;right:14px">✕</button></div>
+<div class="shooting-star" id="shooting-star"></div>
+
+<script type="module" src="./app/main.js"></script>
+</body>
+</html>
