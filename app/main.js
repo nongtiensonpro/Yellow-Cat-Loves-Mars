@@ -471,6 +471,9 @@ let playerPos=new THREE.Vector3(0, sampleHeight(0,0)+VEHICLES[vehicleType].ride,
 player.position.copy(playerPos);
 let playerYaw=0, playerPitch=0;
 
+// Mèo được nâng khỏi yên bằng catLift.position.y trong buildVehicle().
+// Phải khai báo TRƯỚC buildVehicle() để tránh TDZ.
+var BODY_LIFT = 0;
 let vRefs = { wheels:[], dish:null, mast:null, tail:null, head:null, scarves:[] };
 // Cache hình học bánh: {x,z} offset cục bộ, y = cao độ đáy bánh khi group ở gốc.
 let wCache=[];
@@ -506,10 +509,54 @@ function buildVehicle(type){
     const seat=new THREE.Mesh(new THREE.BoxGeometry(0.3,0.08,0.16), wheelMat); seat.position.set(-0.05,1.12,0); body.add(seat);
     const bar=new THREE.Mesh(new THREE.BoxGeometry(0.3,0.04,0.5), frameMat); bar.position.set(1.05,1.06,0); body.add(bar);
     vRefs.barPos={x:1.05,y:1.06,z:0,halfW:0.25};
-    // giỏ mây + cá
-    const basket=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.35,0.4), new THREE.MeshStandardMaterial({color:0xd9a86c, roughness:0.85})); basket.position.set(1.2,0.86,0); body.add(basket);
-    const fish=new THREE.Mesh(new THREE.SphereGeometry(0.18,8,8), new THREE.MeshStandardMaterial({color:0x4fc3f7, emissive:0x0288d1, emissiveIntensity:0.35})); fish.scale.x=1.4; fish.position.set(1.2,1.1,0); body.add(fish);
-    const fin=new THREE.Mesh(new THREE.ConeGeometry(0.09,0.16,5), new THREE.MeshStandardMaterial({color:0x29b6f6})); fin.rotation.z=Math.PI/2; fin.position.set(0.97,1.1,0); body.add(fin);
+    // ── Giỏ hành trang phía trước: dây đan + túi ngủ + bình nước + ăngten ──
+    // (thay thế "hộp + khối xanh" cũ: giỏ mây trông như thùng gỗ, cá là
+    //  khối tròn vô nghĩa không ai hiểu)
+    const basket=new THREE.Group();
+    const wicker=new THREE.MeshStandardMaterial({color:0xc99a5b, roughness:0.9});
+    // nền giỏ + 4 vách
+    const bFloor=new THREE.Mesh(new THREE.BoxGeometry(0.46,0.03,0.38), wicker);
+    bFloor.position.y=-0.15; basket.add(bFloor);
+    for(const [dx,dz,ry] of [[0,0.19,0],[-0.23,0,Math.PI/2],[0,-0.19,0],[0.23,0,Math.PI/2]]){
+      const w=new THREE.Mesh(new THREE.BoxGeometry(0.46,0.30,0.025), wicker);
+      w.position.set(dx,0,dz); w.rotation.y=ry; basket.add(w);
+    }
+    // sọc dây đan (3 vòng ngang mỗi vách) -> đọc ra "giỏ đan" thay vì "hộp"
+    for(let r=0;r<3;r++){
+      const y=-0.06+r*0.075;
+      for(const [dx,dz,ry] of [[0,0.195,0],[-0.235,0,Math.PI/2],[0,-0.195,0],[0.235,0,Math.PI/2]]){
+        const band=new THREE.Mesh(new THREE.BoxGeometry(0.47,0.018,0.032),
+              new THREE.MeshStandardMaterial({color:0xa87a42, roughness:0.9}));
+        band.position.set(dx,y,dz); band.rotation.y=ry; basket.add(band);
+      }
+    }
+    // quai treo lên ghi đông
+    for(const dz of [0.15,-0.15]){
+      const handle=new THREE.Mesh(new THREE.TorusGeometry(0.10,0.014,5,12,Math.PI), new THREE.MeshStandardMaterial({color:0x9c6f3c, roughness:0.9}));
+      handle.position.set(0,0.16,dz); handle.rotation.y=Math.PI/2; basket.add(handle);
+    }
+    // túi ngủ cuộn (xanh Sao Hỏa) nằm trong giỏ
+    const bag=new THREE.Mesh(new THREE.CapsuleGeometry(0.085,0.26,4,12),
+          new THREE.MeshStandardMaterial({color:0x3fb0d8, roughness:0.75}));
+    bag.rotation.z=Math.PI/2; bag.position.set(0.02,0.02,0.02); basket.add(bag);
+    for(const dz of [-0.09,0.09]){                       // dây buộc túi
+      const strap=new THREE.Mesh(new THREE.TorusGeometry(0.088,0.011,5,12),
+            new THREE.MeshStandardMaterial({color:0xe23c2e, roughness:0.8}));
+      strap.position.set(0.02,0.02,dz); strap.rotation.y=Math.PI/2; basket.add(strap);
+    }
+    // bình nước bạc chụp lên thành giỏ
+    const canteen=new THREE.Mesh(new THREE.CylinderGeometry(0.052,0.052,0.17,12),
+          new THREE.MeshStandardMaterial({color:0xd6dbe2, roughness:0.3, metalness:0.8}));
+    canteen.position.set(-0.15,0.08,-0.14); basket.add(canteen);
+    const cap=new THREE.Mesh(new THREE.CylinderGeometry(0.028,0.032,0.035,8),
+          new THREE.MeshStandardMaterial({color:0xe23c2e, roughness:0.6}));
+    cap.position.set(-0.15,0.18,-0.14); basket.add(cap);
+    // gương + ăngten gắn trên quai
+    const mirror=new THREE.Mesh(new THREE.CylinderGeometry(0.032,0.032,0.012,12),
+          new THREE.MeshStandardMaterial({color:0xbfe6ff, roughness:0.05, metalness:0.9}));
+    mirror.position.set(0.24,0.22,-0.16); mirror.rotation.z=0.5; basket.add(mirror);
+    basket.scale.setScalar(0.52); basket.position.set(1.30,0.66,0); basket.rotation.y=0.04;
+    body.add(basket); vRefs.basket=basket;
     // bàn đạp
     const pedal=new THREE.Group();
     const arm=new THREE.Mesh(new THREE.BoxGeometry(0.3,0.03,0.03), chrome); arm.position.x=0.15; pedal.add(arm);
@@ -522,8 +569,17 @@ function buildVehicle(type){
     tank.rotation.z=Math.PI/2; tank.position.set(0.15,0.95,0); body.add(tank);
     const seat=new THREE.Mesh(new THREE.BoxGeometry(1.0,0.16,0.42), new THREE.MeshStandardMaterial({color:0x1a1a1a, roughness:0.8})); seat.position.set(-0.35,1.12,0); body.add(seat);
     const fork=new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,0.85,8), chrome); fork.position.set(0.85,0.72,0); fork.rotation.z=-0.35; body.add(fork);
-    const hbar=new THREE.Mesh(new THREE.BoxGeometry(0.05,0.05,0.5), chrome); hbar.position.set(1.05,1.12,0); body.add(hbar);
-    vRefs.barPos={x:1.05,y:1.12,z:0,halfW:0.25};
+    // Ghi đông: thanh ngang + 2 tay cầm cong + nắp cao su
+    const hbar=new THREE.Mesh(new THREE.CylinderGeometry(0.022,0.022,0.52,10), chrome);
+    hbar.rotation.x=Math.PI/2; hbar.position.set(1.05,1.12,0); body.add(hbar);
+    for(const dz of [0.24,-0.24]){
+      const grip=new THREE.Mesh(new THREE.CylinderGeometry(0.030,0.030,0.13,10),
+            new THREE.MeshStandardMaterial({color:0x2a2a2e, roughness:0.9}));
+      grip.rotation.x=Math.PI/2; grip.position.set(1.05,1.12,dz); body.add(grip);
+      const barEnd=new THREE.Mesh(new THREE.SphereGeometry(0.031,8,6), chrome);
+      barEnd.position.set(1.05,1.12,dz*1.14); body.add(barEnd);
+    }
+    vRefs.barPos={x:1.05,y:1.12,z:0,halfW:0.25}; vRefs.barObj=body;
     const mkW=(x)=>{ const w=new THREE.Group(); const tire=new THREE.Mesh(new THREE.TorusGeometry(0.42,0.115,8,18), wheelMat); tire.rotation.y=Math.PI/2; w.add(tire);
       for(let s=0;s<4;s++){ const sp=new THREE.Mesh(new THREE.BoxGeometry(0.025,0.78,0.025), chrome); sp.rotation.z=s*Math.PI/4+0.4; w.add(sp);} w.position.set(x,0.45,0); w.userData.r=0.535; body.add(w); vRefs.wheels.push(w); return w; };
     mkW(-1.05); mkW(1.05);
@@ -547,7 +603,7 @@ function buildVehicle(type){
     // золотая foil belly
     const foil=new THREE.Mesh(new THREE.BoxGeometry(2.0,0.1,1.0), new THREE.MeshStandardMaterial({color:0xffd54f, metalness:0.9, roughness:0.3})); foil.position.set(0,0.78,0); body.add(foil);
     const cabin=new THREE.Mesh(new THREE.BoxGeometry(1.0,0.55,1.05), new THREE.MeshStandardMaterial({color:0x7ec8e3, transparent:true, opacity:0.55, roughness:0.08, metalness:0.1}));
-    cabin.position.set(0.05,1.52,0); body.add(cabin);
+    cabin.position.set(0.05,1.52,0); body.add(cabin); vRefs.cabin=cabin;
     const deck=new THREE.Mesh(new THREE.BoxGeometry(0.9,0.07,1.0), new THREE.MeshStandardMaterial({color:0x12324a, metalness:0.6, roughness:0.35})); deck.position.set(-0.85,1.3,0); body.add(deck); // panel pin
     // mast camera
     const mast=new THREE.Group();
@@ -577,73 +633,302 @@ function buildVehicle(type){
     mkW(-1.0,0.66,0.46); mkW(-1.0,-0.66,-0.46);
     g.add(body);
   }
-  // ===== Mèo Vàng =====
+  // ===== MÈO VÀNG — DỰNG CHI TIẾT =====
+  // Mèo ngồi trên yên, hai tay vươn ra nắm ghi đông. Toàn bộ chi tiết dựng
+  // bằng procedural geometry (không asset ngoài) để giữ triết lý static.
   const cat=new THREE.Group();
-  const fur=new THREE.MeshStandardMaterial({color:0xffcc33});
-  const furDark=new THREE.MeshStandardMaterial({color:0xffb300});
-  const catBody=new THREE.Mesh(new THREE.CapsuleGeometry(0.28,0.45,4,10), fur);
-  catBody.rotation.z=Math.PI/2; catBody.position.set(0,1.55,0); cat.add(catBody);
-  const head=new THREE.Mesh(new THREE.SphereGeometry(0.32,12,10), new THREE.MeshStandardMaterial({color:0xffd54f})); head.position.set(0.38,1.82,0); cat.add(head); vRefs.head=head;
-  // sọc
-  for(const sx of [0.1,0.25]){ const stripe=new THREE.Mesh(new THREE.SphereGeometry(0.28,10,8,0,Math.PI*2,0.9,0.5), furDark); stripe.rotation.z=Math.PI/2; stripe.position.set(sx,1.62,0); cat.add(stripe); }
-  const earG=new THREE.ConeGeometry(0.12,0.22,8);
-  const ear1=new THREE.Mesh(earG, furDark); ear1.position.set(0.42,2.05,0.14); cat.add(ear1);
-  const ear2=ear1.clone(); ear2.position.set(0.42,2.05,-0.14); cat.add(ear2);
-  const helmet=new THREE.Mesh(new THREE.SphereGeometry(0.42,14,10), new THREE.MeshStandardMaterial({color:0xffffff, transparent:true, opacity:0.2, roughness:0.05, metalness:0.1})); helmet.position.set(0.38,1.84,0); cat.add(helmet);
-  const ring=new THREE.Mesh(new THREE.TorusGeometry(0.4,0.035,6,16), new THREE.MeshStandardMaterial({color:0xf5f5f5, metalness:0.6, roughness:0.3})); ring.position.set(0.38,1.62,0); ring.rotation.y=Math.PI/2; cat.add(ring);
-  const scarf=new THREE.Mesh(new THREE.BoxGeometry(0.12,0.08,0.52), new THREE.MeshStandardMaterial({color:0xff3b2f})); scarf.position.set(0.12,1.58,0); cat.add(scarf);
-  // ĐUÔI động
-  const tail=new THREE.Group();
-  const t1=new THREE.Mesh(new THREE.CapsuleGeometry(0.06,0.3,4,8), fur); t1.position.set(-0.15,0,0); t1.rotation.z=0.9; tail.add(t1);
-  const t2=new THREE.Mesh(new THREE.CapsuleGeometry(0.05,0.25,4,8), furDark); t2.position.set(-0.4,0.16,0); t2.rotation.z=1.5; tail.add(t2);
-  tail.position.set(-0.52,1.34,0); tail.scale.set(0.85,0.85,0.85); cat.add(tail); vRefs.tail=tail;
-  // chân đạp (bike)
-  if(type==='bike'){
-    for(const dz of [0.14,-0.14]){
-      const leg=new THREE.Mesh(new THREE.CapsuleGeometry(0.05,0.22,4,8), fur); leg.position.set(0.02,1.28,dz); cat.add(leg);
-    }
+
+  // ---------- Vật liệu ----------
+  const matFur   = new THREE.MeshStandardMaterial({color:0xffc93c, roughness:0.84});
+  const matFurD  = new THREE.MeshStandardMaterial({color:0xe2961c, roughness:0.86}); // sọc tabby
+  const matCream = new THREE.MeshStandardMaterial({color:0xfff3cf, roughness:0.88}); // bụng/mõm
+  const matPink  = new THREE.MeshStandardMaterial({color:0xff9db0, roughness:0.5});
+  const matWhite = new THREE.MeshStandardMaterial({color:0xf6f6ef, roughness:0.34, metalness:0.18});
+  const matGold  = new THREE.MeshPhysicalMaterial({color:0xffcb63, roughness:0.07, metalness:0.4,
+                                                   transparent:true, opacity:0.34,
+                                                   side:THREE.DoubleSide, depthWrite:false});
+  const matChrome= new THREE.MeshStandardMaterial({color:0xd6dbe2, roughness:0.28, metalness:0.85});
+  const matRed   = new THREE.MeshStandardMaterial({color:0xe23c2e, roughness:0.72});
+  const matEyeW  = new THREE.MeshStandardMaterial({color:0xfdfbf4, roughness:0.22});
+  const matIris  = new THREE.MeshStandardMaterial({color:0x5cc46e, roughness:0.18,
+                                                   emissive:0x0e3a1a, emissiveIntensity:0.4});
+  const matPupil = new THREE.MeshStandardMaterial({color:0x0a0a0a, roughness:0.1});
+  const matGloss = new THREE.MeshBasicMaterial({color:0xffffff});
+  const matDark  = new THREE.MeshStandardMaterial({color:0x4a3418, roughness:0.8});
+
+  // Trợ giác: cho một mesh (mặc định trục dọc +Y) chĩa theo vector chỉ định
+  const _mUp=new THREE.Vector3(0,1,0), _mDir=new THREE.Vector3();
+  const aim=(m,dx,dy,dz)=>{ _mDir.set(dx,dy,dz).normalize(); m.quaternion.setFromUnitVectors(_mUp,_mDir); };
+
+  // ---------- THÂN: ngực + bụng + hông ----------
+  // Toàn thân Mèo nâng cao khỏi yên: tư thế ngồi thẳng lưng khi lái
+  const BODY_Y=0.13; BODY_LIFT=BODY_Y;
+  const torso=new THREE.Mesh(new THREE.SphereGeometry(0.30,22,18), matFur);
+  torso.scale.set(1.28,0.95,0.95); torso.position.set(-0.05,1.52,0); cat.add(torso);
+  const chest=new THREE.Mesh(new THREE.SphereGeometry(0.225,18,14), matFur);
+  chest.scale.set(1.0,1.06,0.96); chest.position.set(0.21,1.58,0); cat.add(chest);
+  const belly=new THREE.Mesh(new THREE.SphereGeometry(0.205,18,14), matCream);
+  belly.scale.set(1.08,0.78,0.9); belly.position.set(0.15,1.39,0); cat.add(belly);
+  const hipMeshes=[], thighMeshes=[], stripeMeshes=[];
+  for(const s of [1,-1]){
+    const hip=new THREE.Mesh(new THREE.SphereGeometry(0.20,16,12), matFur);
+    hip.scale.set(1.0,1.02,0.86); hip.position.set(-0.30,1.49,s*0.13); cat.add(hip); hipMeshes.push(hip);
+    // bắp đùi nổi (bó cơ đùi mèo)
+    const thighMus=new THREE.Mesh(new THREE.SphereGeometry(0.115,12,10), matFur);
+    thighMus.scale.set(1.25,1.0,0.8); thighMus.position.set(-0.20,1.56,s*0.155); cat.add(thighMus); thighMeshes.push(thighMus);
+  }
+  // sọc tabby: 5 dải ôm đúng mặt cắt thân (bán kính tính theo ellipsoid)
+  [[0.30,0.021],[0.17,0.023],[0.03,0.024],[-0.12,0.023],[-0.26,0.020]].forEach(([lx,tr])=>{
+    const rr=0.285*Math.sqrt(Math.max(0.04,1-Math.pow(lx/0.384,2)))*1.03;
+    const st=new THREE.Mesh(new THREE.TorusGeometry(rr,tr,5,16), matFurD);
+    st.rotation.y=Math.PI/2; st.scale.set(1,0.96,1); st.position.set(-0.05+lx,1.52,0);
+    cat.add(st); stripeMeshes.push(st);
+  });
+  // sọc trên đùi
+  for(const s of [1,-1]){
+    const st=new THREE.Mesh(new THREE.TorusGeometry(0.145,0.017,5,14), matFurD);
+    st.rotation.y=Math.PI/2; st.rotation.x=0.4; st.position.set(-0.20,1.56,s*0.152);
+    st.scale.set(1,0.95,1); cat.add(st); stripeMeshes.push(st);
   }
 
+  // Gom các khối thân vào một nhóm: ở góc nhìn thứ nhất (cockpit) sẽ ẩn đi,
+  // vì ngực Mèo che kín tay khi ngồi sau vô-lăng rover.
+  const selfBody=new THREE.Group();
+  cat.add(selfBody); vRefs.selfBody=selfBody;
+  for(const m of [torso, chest, belly]) selfBody.attach(m);
+  for(const h of hipMeshes) selfBody.attach(h);
+  for(const t of thighMeshes) selfBody.attach(t);
+  for(const s of stripeMeshes) selfBody.attach(s);
+
+  // ---------- KHĂN ĐỎ + HUY HIỆU ----------
+  // Khăn quấn quanh CỔ (thấp hơn cằm), không che mặt
+  const scarf=new THREE.Mesh(new THREE.TorusGeometry(0.20,0.062,8,24), matRed);
+  scarf.rotation.x=Math.PI/2; scarf.position.set(0.06,1.46,0); scarf.scale.set(1,1,0.85); cat.add(scarf);
+  const knot=new THREE.Mesh(new THREE.SphereGeometry(0.055,10,8), matRed);
+  knot.scale.set(0.9,0.8,1.1); knot.position.set(-0.10,1.47,0.11); cat.add(knot);
+  // Đuôi khăn bay về sau (vẫy theo tốc độ)
+  const scarfTail=new THREE.Group();
+  const sc1=new THREE.Mesh(new THREE.BoxGeometry(0.26,0.095,0.028), matRed); sc1.position.set(-0.13,0,0);
+  const sc2=new THREE.Mesh(new THREE.BoxGeometry(0.22,0.082,0.024), matRed); sc2.position.set(-0.35,0.045,0);
+  scarfTail.add(sc1,sc2);
+  scarfTail.position.set(-0.13,1.47,0.10); scarfTail.rotation.z=0.30;
+  cat.add(scarfTail); vRefs.scarf=scarfTail;
+  // huy hiệu "MÈO VÀNG" trên ngực
+  const badge=new THREE.Mesh(new THREE.CylinderGeometry(0.058,0.058,0.012,14), matRed);
+  badge.rotation.z=Math.PI/2; badge.position.set(0.30,1.50,0.16); cat.add(badge);
+  const badgeDot=new THREE.Mesh(new THREE.SphereGeometry(0.022,10,8), matCream);
+  badgeDot.position.set(0.312,1.50,0.16); cat.add(badgeDot);
+
+  // ---------- ĐẦU ----------
+  const headG=new THREE.Group();
+  const HEAD_S=0.72;                                 // tỉ lệ đầu so với thân
+  headG.position.set(0.30,1.78,0); cat.add(headG); vRefs.head=headG;
+
+  const skull=new THREE.Mesh(new THREE.SphereGeometry(0.29,24,18), matFur);
+  skull.scale.set(1.02,0.95,1.0); headG.add(skull);
+  for(const s of [1,-1]){                       // má phồng
+    const ck=new THREE.Mesh(new THREE.SphereGeometry(0.135,14,12), matFur);
+    ck.scale.set(0.92,0.86,1.0); ck.position.set(0.165,-0.06,s*0.155); headG.add(ck);
+  }
+  const muzzle=new THREE.Mesh(new THREE.SphereGeometry(0.135,16,12), matCream);
+  muzzle.scale.set(1.05,0.80,1.0); muzzle.position.set(0.235,-0.09,0); headG.add(muzzle);
+  const noseBridge=new THREE.Mesh(new THREE.BoxGeometry(0.10,0.05,0.095), matCream);
+  noseBridge.position.set(0.255,-0.012,0); headG.add(noseBridge);
+  const nose=new THREE.Mesh(new THREE.SphereGeometry(0.042,12,10), matPink);
+  nose.scale.set(0.9,0.72,1.12); nose.position.set(0.312,-0.038,0); headG.add(nose);
+  for(const s of [1,-1]){                       // miệng hình chữ W
+    const lip=new THREE.Mesh(new THREE.SphereGeometry(0.031,10,8), matDark);
+    lip.scale.set(0.45,1.0,1.45); lip.position.set(0.297,-0.088,s*0.037); headG.add(lip);
+  }
+  const chin=new THREE.Mesh(new THREE.SphereGeometry(0.075,12,10), matCream);
+  chin.scale.set(1.0,0.7,1.1); chin.position.set(0.225,-0.175,0); headG.add(chin);
+  headG.scale.setScalar(HEAD_S);   // đầu gọn, cân với thân
+
+  // ---------- MẮT: nhãn cầu + mống + đồng tử dọc + lòng sáng ----------
+  const eyes=[];
+  for(const s of [1,-1]){
+    const eg=new THREE.Group();
+    eg.position.set(0.205,0.055,s*0.132);
+    eg.rotation.y=-s*0.32; eg.rotation.z=-0.10;
+    eg.add(new THREE.Mesh(new THREE.SphereGeometry(0.072,16,14), matEyeW));
+    const iris=new THREE.Mesh(new THREE.SphereGeometry(0.062,16,14), matIris);
+    iris.position.set(0.026,0.004,0); iris.scale.set(0.6,1,1); eg.add(iris);
+    const pup=new THREE.Mesh(new THREE.SphereGeometry(0.05,14,12), matPupil);
+    pup.position.set(0.050,0.004,0); pup.scale.set(0.32,1.06,0.55); eg.add(pup);   // đồng tử dọc
+    const hi=new THREE.Mesh(new THREE.SphereGeometry(0.016,8,6), matGloss);
+    hi.position.set(0.066,0.030,-s*0.017); eg.add(hi);
+    const hi2=new THREE.Mesh(new THREE.SphereGeometry(0.009,6,5), matGloss);
+    hi2.position.set(0.062,-0.022,s*0.020); eg.add(hi2);
+    headG.add(eg); eyes.push(eg);
+    // mi mắt trên
+    const lid=new THREE.Mesh(new THREE.SphereGeometry(0.080,14,10,0,Math.PI*2,0,Math.PI*0.40), matFurD);
+    lid.position.set(0.205,0.055,s*0.132); lid.rotation.y=-s*0.32; lid.rotation.z=0.34;
+    lid.scale.set(1,0.72,1); headG.add(lid);
+  }
+  vRefs.eyes=eyes;
+
+  // ---------- RIA ----------
+  for(const s of [1,-1]) for(let i=0;i<4;i++){
+    const w=new THREE.Mesh(new THREE.CylinderGeometry(0.0042,0.0018,0.30,4), matCream);
+    w.position.set(0.255,-0.052-i*0.021,s*0.095);
+    aim(w, 0.88, 0.24-i*0.13, s*(0.44+i*0.16));
+    headG.add(w);
+  }
+
+  // ---------- TAI (nhô ra khỏi mũ) ----------
+  const ears=[];
+  for(const s of [1,-1]){
+    const outer=new THREE.Mesh(new THREE.ConeGeometry(0.118,0.27,13), matFur);
+    outer.position.set(0.295,0.30,s*0.205); aim(outer,-0.16,0.72,s*0.67); headG.add(outer);
+    const inner=new THREE.Mesh(new THREE.ConeGeometry(0.074,0.175,11), matPink);
+    inner.position.set(0.322,0.295,s*0.222); aim(inner,-0.16,0.72,s*0.67); headG.add(inner);
+    for(let i=0;i<3;i++){                        // chùm lông trong tai
+      const tf=new THREE.Mesh(new THREE.ConeGeometry(0.015,0.085,5), matCream);
+      tf.position.set(0.312,0.325,s*(0.20+i*0.028)); aim(tf,-0.1,0.82,s*0.58); headG.add(tf);
+    }
+    ears.push(outer); vRefs.ears=ears;
+  }
+
+  // ---------- MŨ PHI HÀNH: vỏ trắng + kính vàng + vành + ống thở ----------
+  const hel=new THREE.Group();
+  hel.position.set(0.30,1.78,0); hel.scale.setScalar(HEAD_S); cat.add(hel); vRefs.helmet=hel;
+  // Vỏ trắng: chỉ phần trên-sau (tránh che mặt)
+  hel.add(new THREE.Mesh(new THREE.SphereGeometry(0.40,26,18,
+        -Math.PI*0.50, Math.PI*1.0, 0, Math.PI*0.52), matWhite));
+  // Kính vàng: phần trước, phủ từ trán xuống cằm
+  const visor=new THREE.Mesh(new THREE.SphereGeometry(0.406,26,20,
+        Math.PI*0.50, Math.PI*1.0, 0, Math.PI*0.72), matGold);
+  hel.add(visor); vRefs.helmetVisor=visor;
+  // Vành cổ nằm THẤP (dưới cằm) để không cắt ngang mặt
+  const neckRing=new THREE.Mesh(new THREE.TorusGeometry(0.355,0.030,8,28), matWhite);
+  neckRing.rotation.x=Math.PI/2; neckRing.position.y=-0.285; hel.add(neckRing);
+  // Đèn trạng thái + ăngten nằm trên đỉnh vỏ
+  const led=new THREE.Mesh(new THREE.SphereGeometry(0.038,10,8),
+        new THREE.MeshStandardMaterial({color:0x7dff9c, emissive:0x22ff55, emissiveIntensity:1.5}));
+  led.position.set(-0.20,0.30,0.14); hel.add(led);
+  const ant=new THREE.Mesh(new THREE.CylinderGeometry(0.012,0.012,0.21,5), matChrome);
+  ant.position.set(-0.16,0.40,-0.12); ant.rotation.z=-0.35; ant.rotation.x=0.24; hel.add(ant);
+  // Huy hiệu Mèo Vàng trên vỏ sau
+  const helBadge=new THREE.Mesh(new THREE.BoxGeometry(0.014,0.13,0.19), matRed);
+  helBadge.position.set(-0.395,0.06,0); hel.add(helBadge);
+  // Bản lề mũ (2 bên)
+  for(const s of [1,-1]){
+    const hinge=new THREE.Mesh(new THREE.CylinderGeometry(0.036,0.036,0.075,9), matChrome);
+    hinge.rotation.x=Math.PI/2; hinge.position.set(0.02,0.02,s*0.385); hel.add(hinge);
+  }
+
+  // ---------- CHÂN SAU (bàn chân có ngón + đệm) ----------
+  const paws=[];
+  function makeLeg(hx,hy,hz,fx,fy,fz,s){
+    const lg=new THREE.Group();
+    const hipM=new THREE.Mesh(new THREE.SphereGeometry(0.115,12,10), matFur);
+    hipM.position.set(hx,hy,hz); lg.add(hipM);
+    const thigh=new THREE.Mesh(new THREE.CapsuleGeometry(0.072,0.20,4,10), matFur);
+    thigh.position.set((hx+fx)/2,(hy+fy)/2,(hz+fz)/2); aim(thigh,fx-hx,fy-hy,fz-hz); lg.add(thigh);
+    const kx=fx+s*0.085, ky=fy+0.03, kz=fz;
+    const shin=new THREE.Mesh(new THREE.CapsuleGeometry(0.053,0.19,4,10), matFur);
+    shin.position.set((fx+kx)/2,(fy+ky)/2,(fz+kz)/2); aim(shin,kx-fx,ky-fy,kz-fz); lg.add(shin);
+    const paw=new THREE.Group(); paw.position.set(kx,ky-0.03,kz);
+    const pad=new THREE.Mesh(new THREE.SphereGeometry(0.072,12,10), matCream);
+    pad.scale.set(1.25,0.6,0.95); paw.add(pad);
+    for(let i=0;i<3;i++){
+      const toe=new THREE.Mesh(new THREE.SphereGeometry(0.034,8,6), matCream);
+      toe.scale.set(1.1,0.58,0.88); toe.position.set(0.062,-0.010,(i-1)*0.048); paw.add(toe);
+      const bean=new THREE.Mesh(new THREE.SphereGeometry(0.017,6,5), matPink);
+      bean.scale.set(1,0.4,1.25); bean.position.set(0.018,-0.028,(i-1)*0.048); paw.add(bean);
+    }
+    lg.add(paw); cat.add(lg); paws.push(paw); return paw;
+  }
+  const footBike=[0.06,1.18,0.175], footOther=[0.10,1.10,0.215];
+  const f = (type==='bike') ? footBike : footOther;
+  for(const s of [1,-1]) makeLeg(-0.30,1.46,s*0.155, f[0],f[1],s*f[2], s);
+
+  // ---------- ĐUÔI 5 ĐỐT ----------
+  const tail=new THREE.Group();
+  let px=0, py=0, r0=0.088;
+  const segs=[];
+  for(let i=0;i<5;i++){
+    const seg=new THREE.Group();
+    const rr=r0*(1-i*0.11);
+    const m=new THREE.Mesh(new THREE.CapsuleGeometry(rr,0.185,4,12), (i===4)? matCream : matFur);
+    m.rotation.z=Math.PI/2; m.position.set(-0.115,0,0); seg.add(m);
+    if(i<4){                                   // vòng sọc nối đốt
+      const ring=new THREE.Mesh(new THREE.TorusGeometry(rr*0.98,0.013,5,14), matFurD);
+      ring.rotation.y=Math.PI/2; ring.position.set(-0.205,0,0); seg.add(ring);
+    }
+    seg.position.set(px,py,0);
+    seg.rotation.z=0.26+i*0.15;                 // cong lên dần -> đuôi mềm
+    tail.add(seg); segs.push(seg);
+    px-=0.215; py+=0.045;
+  }
+  tail.position.set(-0.44,1.40,0); tail.scale.set(0.92,0.92,0.92);
+  cat.add(tail); vRefs.tail=tail; vRefs.tailSegs=segs;
   // ══════ HAI CÁNH TAY LÁI XE ══════
   // Mèo ngồi trên yên, hai tay vươn ra nắm ghi đông. Mỗi tay gồm: cánh tay
   // (xoay được ở vai) + bàn tay (xoay ở cổ tay) + mũi ên nhô ra. Nhờ vRefs
   // mà góc nhìn thứ nhất thấy rõ Mèo đang lái: cánh tay bám ghi đông, bàn tay
   // xoay theo vô-lăng, tay nhấp nhô khi xe lên xuống.
-  const armMat = new THREE.MeshStandardMaterial({color:0xffc933, roughness:0.75});
-  const pawMat  = new THREE.MeshStandardMaterial({color:0xfff0c2, roughness:0.6});
+  const armMat = new THREE.MeshStandardMaterial({color:0xffc93c, roughness:0.82});
+  const pawMat  = new THREE.MeshStandardMaterial({color:0xfff3cf, roughness:0.62});
+  const clawMat = new THREE.MeshStandardMaterial({color:0x3a2a18, roughness:0.5});
   vRefs.arms = [];
   for(const side of [1,-1]){
     const shoulder = new THREE.Group();
     shoulder.position.set(0.10, 1.66, side*0.19);       // vai (thấp & rộng để tay thấy rõ)
-    // cánh tay: hình hộp vát, hướng về trước
-    const upper = new THREE.Mesh(new THREE.CapsuleGeometry(0.065,0.30,4,8), armMat);
-    upper.rotation.z = Math.PI/2;                        // nằm ngang, chĩa +X
-    upper.position.set(0.17,0,0);
+    // Bắp vai (khối cầu) cho vai tròn, không phải mối nối thô
+    const deltoid=new THREE.Mesh(new THREE.SphereGeometry(0.088,12,10), armMat);
+    deltoid.scale.set(1,0.95,0.9); shoulder.add(deltoid);
+    // Cánh tay trên: capsule, chĩa +X
+    const upper = new THREE.Mesh(new THREE.CapsuleGeometry(0.062,0.16,4,10), armMat);
+    upper.rotation.z = Math.PI/2; upper.position.set(0.15,0,0);
     shoulder.add(upper);
-    // cổ tay
+    // Cánh tay dưới (rùn hơn) nối khuỷu -> cổ tay
+    const fore = new THREE.Mesh(new THREE.CapsuleGeometry(0.052,0.15,4,10), armMat);
+    fore.rotation.z = Math.PI/2; fore.position.set(0.27,0,0);
+    shoulder.add(fore);
+    // Cổ tay (xoay được)
     const wrist = new THREE.Group();
     wrist.position.set(0.34,0,0);
-    const paw = new THREE.Mesh(new THREE.SphereGeometry(0.085,10,8), pawMat);
-    paw.scale.set(1,0.85,0.9);
+    // Lòng bàn: bàn tay dẹt, hướng +X
+    const paw = new THREE.Mesh(new THREE.SphereGeometry(0.082,14,12), pawMat);
+    paw.scale.set(1.15,0.72,0.95); paw.position.set(0.022,0,0);
     wrist.add(paw);
-    // ba ngón mấu ôm ghi đông
-    for(let f=0; f<3; f++){
-      const toe = new THREE.Mesh(new THREE.CapsuleGeometry(0.022,0.05,3,6), pawMat);
-      toe.position.set(0.06, -0.035 + f*0.035, (f-1)*0.045);
-      toe.rotation.z = -0.5;
+    // 4 ngón + vuốt ôm ghi đông
+    for(let f=0; f<4; f++){
+      const ty=(f-1.5)*0.042;
+      const toe = new THREE.Mesh(new THREE.CapsuleGeometry(0.021,0.055,3,8), pawMat);
+      toe.position.set(0.075, -0.030, ty);
+      toe.rotation.x = Math.PI/2; toe.rotation.z = -0.55;
       wrist.add(toe);
+      // vuốt nhỏ màu sẫm ở đầu ngón
+      const claw = new THREE.Mesh(new THREE.ConeGeometry(0.011,0.028,6), clawMat);
+      claw.position.set(0.098, -0.046, ty);
+      claw.rotation.x = -Math.PI/2; claw.rotation.z = -0.55;
+      wrist.add(claw);
     }
+    // Ngón cái ôm bên trong
+    const thumb = new THREE.Mesh(new THREE.CapsuleGeometry(0.019,0.04,3,7), pawMat);
+    thumb.position.set(0.02,-0.032, side*0.062); thumb.rotation.x=Math.PI/2; thumb.rotation.z=0.5;
+    wrist.add(thumb);
+    // Đệm ngón hồng (màu hồng) ở lòng bàn
+    const bean = new THREE.Mesh(new THREE.SphereGeometry(0.026,8,6), matPink);
+    bean.scale.set(1,0.35,1.2); bean.position.set(0.028,-0.046,0);
+    wrist.add(bean);
     shoulder.add(wrist);
     cat.add(shoulder);
     vRefs.arms.push({ shoulder, wrist, side });
   }
 
-  g.add(cat);
+  // Nâng cả Mèo lên trên yên
+  const catLift=new THREE.Group();
+  catLift.position.y=BODY_Y;
+  catLift.add(cat);
+  g.add(catLift);
   cat.name='cat';
   // Đèn phụ gắn theo xe: giữ Mèo & cánh tay luôn đủ sáng khi nhìn từ góc
   // thứ nhất, tránh bóng tối đọc không ra hình dạng.
   const keyLight=new THREE.PointLight(0xffd9a0, 1.15, 6, 2);
-  keyLight.position.set(0.55, 2.3, 0.15);
+  keyLight.position.set(0.55, 2.4, 0.15);
   g.add(keyLight);
   const fillLight=new THREE.PointLight(0xffb877, 0.55, 5, 2);
   fillLight.position.set(-0.5, 1.9, -0.5);
@@ -745,13 +1030,23 @@ function updateRidingPose(dt, steerInput, speed, boosting){
   for(const arm of vRefs.arms){
     const s = arm.side;                              // +1 trái, -1 phải
     // Vị trí bàn tay: hai bên ghi đông, cách nhau 2*halfW
-    const hx = bar.halfW * s * 0.86;
-    const hy = bar.y + bobAmt*Math.sin(armBob) - 0.02;
-    const hz = 0;
+    const hy = bar.y + bobAmt*Math.sin(armBob) + 0.02;   // ngay trên ghi đông
 
-    // Tính vector vai -> bàn tay trong không gian group mèo
-    const sx = 0.16, sy = 1.72, sz = 0.17*s;
-    let dx = hx - sx, dy = hy - sy, dz = hz - sz;
+    // Mèo nằm trong catLift (đã nâng BODY_LIFT khỏi yên), còn vRefs.barPos.y là
+    // toạ độ trong group XE. Nên cả vai lẫn bàn tay phải cùng hệ toạ độ.
+    //   vai:  y = 1.66            (local trong catLift)
+    //   tay:  y = bar.y - BODY_LIFT  (đưa về local của catLift)
+    // Vai ở ngực (local y ~1.44), bàn tay với đúng ghi đông. Chiều dài cánh tay
+    // = khoảng cách vai->tay, nên tự co giãn theo.
+    const sy = 1.44;
+    const sx = 0.12, sz = 0.21*s;
+    const hyCat = hy - BODY_LIFT;
+    // Bàn tay phải nằm ở đúng barPos.x (trục dọc của xe), không phải hx:
+    // hx chỉ là độ lệch bên, ta ghép lại thành toạ độ đầy đủ.
+    // Hai tay nắm hai đầu ghi đông: dọc theo trục xe (bar.x) và lệch nhau
+    // về hai bên ở bar.halfW — nếu cùng z=0 thì hai tay chồng lên nhau.
+    const tx = bar.x, tz = bar.halfW * s * 0.82;
+    let dx = tx - sx, dy = hyCat - sy, dz = tz - sz;
     const len = Math.hypot(dx,dy,dz) || 1e-6;
     dx/=len; dy/=len; dz/=len;
 
@@ -812,14 +1107,37 @@ function updateCamera(dt){
     // Rover cabin to hơn & mèo ngồi cao hơn -> camera phải lùi xa và cao hơn
     // một chút, nếu không cabin sẽ chiếm gần hết khung hình.
     const isRover = vehicleType === 'rover';
-    camera.position.copy(playerPos).addScaledVector(fwd, isRover ? -3.05 : -2.35);
-    camera.position.y = playerPos.y + (isRover ? 3.30 : 2.95);
+    // GÓC NHÌN QUA VAI (over-the-shoulder): đứng hơi lệch sang phải + cao,
+    // nhìn chếch qua thân Mèo. Nhờ vậy thấy ĐỒNG THỜI: đầu mèo (trái khung),
+    // hai cánh tay nắm ghi đông (giữa dưới) và tầm nhìn đường đi (trên).
+    // Đặt sát SAU ĐẦU Mèo (headG ở local (0.30, 1.78) + BODY_Y 0.13 -> ~1.91m).
+    // Ở đây thân không che tay, mà đầu/tai/mũ vẫn lọt vào góc dưới khung.
+    // Số đo thực tế (world matrix): mắt Mèo y≈2.68, ghi đông y≈1.83, tay y≈1.85.
+    // -> Camera đặt tại mắt Mèo (y≈2.80) và nhìn XUỐNG ~20° để thấy cả hai bàn
+    //    tay nắm ghi đông ở nửa dưới khung mà vẫn thoáng tầm nhìn phía trước.
+    // (Đầu + mũ được ẩn ở camMode 0 — self-head, đúng như game lái xe thật.)
+    const O = (typeof window!=='undefined' && window.__ycFPV) || null;
+    // Rover: cabin rộng + vô-lăng ở x=0.62 (gần) -> camera lùi xa hơn để tay
+    // không phình to; bike/moto đặt ngay tại mắt Mèo.
+    const shoulder = O ? O.sh : 0.0;
+    // Neo camera theo BÀN TAY THẬT (world matrix). Rover có cabin rộng + vô-lăng
+    // thấp nên dùng thông số riêng (chọn qua probe: RB tốt nhất).
+    const bar = vRefs.barPos || {x:1.05, y:1.12, halfW:0.25};
+    let handY = bar.y, handX = bar.x;
+    if(vRefs.arms && vRefs.arms.length){ player.updateMatrixWorld(true); vRefs.arms[0].wrist.getWorldPosition(_camTmp); handY=_camTmp.y; handX=_camTmp.x; }
+    const upH   = O ? O.up : (isRover ? 2.20 : (handY + 0.34 - playerPos.y));
+    const backH = O ? O.bk : (isRover ? -0.80 : (handX - playerPos.x) - 1.15);
+    camera.position.copy(playerPos).addScaledVector(fwd, backH);
+    camera.position.y = playerPos.y + upH;
     keepCamAboveGround(0.9);
-    // Nhìn về phía trước, hạ thấp vừa phải để tay + ghi đông nằm trong khung
-    const lookAhead = isRover ? 12.0 : 11.0;
-    _camLook.copy(playerPos).addScaledVector(fwd, lookAhead);
-    _camLook.y = playerPos.y + (isRover ? 1.05 : 0.80);  // nhìn xuống rõ tay
-    // Nghiêng camera theo góc lái để có cảm giác vào cua
+    // Nhìm về điểm trước-thấp: vừa thấy tay, vừa thấy đường
+    const lookAhead = O ? O.la : 10.0;
+    _camLook.copy(playerPos).addScaledVector(fwd, lookAhead)
+      .addScaledVector(right, shoulder*0.35);
+    // ly âm = nhìn xuống: điểm nhìn thấp hơn mặt đất để bàn tay lọt vào khung
+    // Điểm nhìn: thấp hơn camera ~1.9m ở xa 10m -> góc nhìn xuống tự nhiên
+    _camLook.y = playerPos.y + (O ? O.ly : (isRover ? -2.60 : (upH - 1.75)));
+    // Nghiêng theo góc lái -> cảm giác vào cua
     _camLook.addScaledVector(right, steerVis * 2.2);
     camera.lookAt(_camLook);
   } else {
@@ -1762,6 +2080,34 @@ function frame(now){
   if(vRefs.dish) vRefs.dish.rotation.y = Math.sin(now*0.0012)*0.9;
   if(vRefs.mast) vRefs.mast.rotation.y = Math.sin(now*0.0008+1.3)*0.7;
   if(vRefs.head) vRefs.head.rotation.z = Math.sin(now*0.004)*0.05 * (1 + Math.min(1, speedKmh*0.02));
+  // Mèo sống: tai động đậy, đuôi vẩy, đèn LED nhấp nháy, khăn đuôi bay
+  // Góc nhìn thứ nhất = mắt Mèo: ẩn đầu + mũ (self-head) để không che tay.
+  if(camMode===0){
+    if(vRefs.head) vRefs.head.visible=false;     // self-head
+    if(vRefs.helmet) vRefs.helmet.visible=false; // self-mũ
+    if(vRefs.cabin) vRefs.cabin.visible=false;   // vỏ cabin bao quanh người lái
+    if(vRefs.selfBody) vRefs.selfBody.visible = (vehicleType!=='rover'); // rover: ngực che tay
+  } else {
+    if(vRefs.selfBody) vRefs.selfBody.visible=true;
+    if(vRefs.head) vRefs.head.visible=true;
+    if(vRefs.helmet) vRefs.helmet.visible=true;
+    if(vRefs.cabin) vRefs.cabin.visible=true;
+  }
+  if(vRefs.ears && vRefs.ears.length){
+    const gust=Math.sin(now*0.0016)+0.5*Math.sin(now*0.0043+1.1);
+    vRefs.ears[0].rotation.x = gust*0.10 - 0.10;
+    if(vRefs.ears[1]) vRefs.ears[1].rotation.x = -gust*0.10 - 0.10;
+  }
+  if(vRefs.tailSegs && vRefs.tailSegs.length){
+    // sóng chạy dọc đuôi
+    for(let i=0;i<vRefs.tailSegs.length;i++)
+      vRefs.tailSegs[i].rotation.y = Math.sin(now*0.006 - i*0.7)*(0.10 + Math.min(0.22, speedKmh*0.006));
+  }
+  if(vRefs.helmet && vRefs.helmet.children.length>3){
+    const ledM=vRefs.helmet.children[3];
+    if(ledM.material) ledM.material.emissiveIntensity = 0.7 + 1.4*(0.5+0.5*Math.sin(now*0.006));
+  }
+  if(vRefs.scarf) vRefs.scarf.rotation.y = Math.sin(now*0.0042)*(0.12 + Math.min(0.55, speedKmh*0.018));
 
   // paws
   for(const p of pawItems){
@@ -1876,7 +2222,19 @@ loadText.textContent='Đang dựng đồng bằng Arcadia và đánh thức Mèo
 window.__yc={ scene, player, camera, renderer, BIOMES, POIS, heightAt, sampleHeight, slopeAt, discovered, VEHICLES, setPlayerPos(x,z){ playerPos.x=x; playerPos.z=z; playerPos.y=sampleHeight(x,z)+VEHICLES[vehicleType].ride; settleToGround(); player.position.copy(playerPos); player.rotation.set(targetPitch, -playerYaw, targetRoll, 'YXZ'); player.updateMatrixWorld(true); },
   setVehicle(t){ setVehicle(t); },
   setCam(m){ camMode=m; },
-  poseInfo(){ return { camMode, steerVis:+steerVis.toFixed(3), arms: vRefs.arms?vRefs.arms.length:0, bar: vRefs.barPos||null }; },
+  poseInfo(){ return { camMode, steerVis:+steerVis.toFixed(3), arms: vRefs.arms?vRefs.arms.length:0, bar: vRefs.barPos||null, bodyLift: BODY_LIFT }; },
+  handWorld(){ player.updateMatrixWorld(true);
+    return (vRefs.arms||[]).map(a=>{ const v=new THREE.Vector3(); a.wrist.getWorldPosition(v);
+      const s=new THREE.Vector3(); a.shoulder.getWorldPosition(s);
+      return { side:a.side, wrist:[+v.x.toFixed(2),+v.y.toFixed(2),+v.z.toFixed(2)],
+               shoulder:[+s.x.toFixed(2),+s.y.toFixed(2),+s.z.toFixed(2)] }; }); },
+  headWorld(){ player.updateMatrixWorld(true); const v=new THREE.Vector3();
+    (vRefs.head||player).getWorldPosition(v); return [+v.x.toFixed(2),+v.y.toFixed(2),+v.z.toFixed(2)]; },
+  barWorld(){ player.updateMatrixWorld(true); const v=new THREE.Vector3();
+    v.set(vRefs.barPos.x, vRefs.barPos.y, 0);
+    (vRefs.barObj||player).localToWorld(v); return [+v.x.toFixed(2),+v.y.toFixed(2),+v.z.toFixed(2)]; },
+  torsoWorld(){ player.updateMatrixWorld(true); const v=new THREE.Vector3();
+    v.set(0,1.52,0); player.localToWorld(v); return [+v.x.toFixed(2),+v.y.toFixed(2),+v.z.toFixed(2)]; },
   wheels(){ return vRefs.wheels; },
   wheelCache(){ return wCache; },
   rides(){ return Object.fromEntries(Object.entries(VEHICLES).map(([k,v])=>[k,v.ride])); },
