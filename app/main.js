@@ -11,9 +11,14 @@ const BIOMES = [
 ];
 
 const VEHICLES = {
-  bike:  { name:'Xe đạp', icon:'🚲', speed:4.2, turn:1.9, bob:0.9 },
-  moto:  { name:'Xe máy', icon:'🏍️', speed:10.5, turn:2.6, bob:0.6 },
-  rover: { name:'Rover', icon:'🚙', speed:7.0, turn:2.0, bob:0.35 },
+  // ride = chiều cao từ mặt đất lên TÂM group (bánh xe chạm đất khi y = ground + ride)
+  // wheels = các cục bộ [dx,dz] của điểm tiếp xúc, dùng để nghiêng & chống chìm
+  bike:  { name:'Xe đạp', icon:'🚲', speed:4.2, turn:1.9, bob:0.9, ride:-0.07,
+           wheels:[[-0.92,0],[-0.92,0],[0.97,0],[0.97,0]], maxSlope:0.85 },
+  moto:  { name:'Xe máy', icon:'🏍️', speed:10.5, turn:2.6, bob:0.6, ride:-0.085,
+           wheels:[[-1.07,0],[-1.07,0],[1.07,0],[1.07,0]], maxSlope:1.25 },
+  rover: { name:'Rover', icon:'🚙', speed:7.0, turn:2.0, bob:0.35, ride:0.38,
+           wheels:[[-1.0,0.68],[-1.0,-0.68],[1.0,0.68],[1.0,-0.68]], maxSlope:1.9 },
 };
 
 
@@ -254,12 +259,93 @@ const terrainGeo = new THREE.PlaneGeometry(TERRAIN_SIZE, TERRAIN_SIZE, SEG, SEG)
 terrainGeo.rotateX(-Math.PI/2);
 const posAttr = terrainGeo.attributes.position;
 
+// ══════ HEIGHTFIELD: bề mặt THẬT của mesh, là nguồn sự thật cho physics ══════
+// Mesh là các tam giác phẳng, nên hàm giải tích heightAt() SAI ở giữa ô — đó là
+// lý do phương tiện chìm/xuyên qua sườn. Ở đây ta đọc chiều cao thật của từng
+// vertex rồi nội suy đúng theo 2 tam giác mà GPU vẽ.
+const HF = {
+  n: SEG+1,               // số vertex mỗi trục
+  min: -TERRAIN_SIZE/2,
+  cell: TERRAIN_SIZE/SEG,
+  data: null,
+  build(posAttr){
+    // Dựng lưới chỉ số từ toạ độ XZ THẬT của từng vertex. Không giả định thứ tự
+    // index của PlaneGeometry (trục j chạy -Z) — tra cứu bảng tra theo ô.
+    const n=this.n, cell=this.cell, min=this.min;
+    const lut=new Int32Array(n*n).fill(-1);
+    for(let k=0;k<posAttr.count;k++){
+      const i=Math.round((posAttr.getX(k)-min)/cell);
+      const j=Math.round((posAttr.getZ(k)-min)/cell);
+      if(i<0||i>=n||j<0||j>=n) continue;
+      lut[j*n+i]=k;
+    }
+    const d=new Float32Array(n*n);
+    for(let k=0;k<n*n;k++){
+      const v=lut[k];
+      // ô không có vertex (chỉ xảy ra ở rìa nếu lệch số) -> nội suy từ lân cận
+      d[k] = v>=0 ? posAttr.getY(v) : 0;
+    }
+    // điền ô trống bằng trung bình 4 lân cận hợp lệ
+    for(let j=0;j<n;j++)for(let i=0;i<n;i++){
+      if(lut[j*n+i]>=0) continue;
+      let s=0,c2=0;
+      for(const [a,b] of [[-1,0],[1,0],[0,-1],[0,1]]){
+        const ii=i+a, jj=j+b;
+        if(ii<0||ii>=n||jj<0||jj>=n) continue;
+        if(lut[jj*n+ii]<0) continue;
+        s+=d[jj*n+ii]; c2++;
+      }
+      d[j*n+i]= c2 ? s/c2 : 0;
+    }
+    this.data=d;
+  },
+  // nội suy tam giác tương ứng 2 tam giác của mỗi ô (khớp raster của GPU)
+  at(x,z){
+    const d=this.data; if(!d) return 0;
+    const n=this.n;
+    let gx=(x-this.min)/this.cell, gz=(z-this.min)/this.cell;
+    gx=THREE.MathUtils.clamp(gx,0,n-1.0001); gz=THREE.MathUtils.clamp(gz,0,n-1.0001);
+    const i=Math.floor(gx), j=Math.floor(gz);
+    const tx=gx-i, tz=gz-j;
+    const h00=d[j*n+i],       h10=d[j*n+i+1];
+    const h01=d[(j+1)*n+i],   h11=d[(j+1)*n+i+1];
+    // PlaneGeometry chia ô thành 2 tam giác: (A,C,B) với A=h00,B=h10,C=h01 ; (C,D,B) với D=h11
+    if(tz < 1-tx) return h00*(1-tx-tz) + h10*tx + h01*tz;           // h = A·(1-tx-tz) + B·tx + C·tz
+    return h01*(1-tx) + h11*(tx+tz-1) + h10*(1-tz);              // h = C·(1-tx) + D·(tx+tz-1) + B·(1-tz)
+  },
+  // vector pháp tuyến (dùng cho nghiêng xe) — trung bình gradient 4 đỉnh
+  normalAt(x,z, out){
+    const e=this.cell*0.5;
+    const hL=this.at(x-e,z), hR=this.at(x+e,z);
+    const hD=this.at(x,z-e), hU=this.at(x,z+e);
+    out.set(hL-hR, 2*e, hD-hU).normalize();
+    return out;
+  }
+};
+
+// độ dốc cục bộ (dùng cho giới hạn leo)
+function slopeAt(x,z){
+  const e=HF.cell*0.5;
+  const dx=(HF.at(x+e,z)-HF.at(x-e,z))/(2*e);
+  const dz=(HF.at(x,z+e)-HF.at(x,z-e))/(2*e);
+  return Math.hypot(dx,dz);
+}
+
+function sampleHeight(x,z){ return HF.at(x,z); }
+
+// Khớp physics với bề mặt GPU: đọc Y thật của từng vertex.
+
 for(let i=0;i<posAttr.count;i++){
   const x=posAttr.getX(i), z=posAttr.getZ(i);
   const h = heightAt(x,z);
   posAttr.setY(i, h);
 }
 terrainGeo.computeVertexNormals();
+
+// Khớp physics với bề mặt GPU: dựng heightfield TỪ vertex Y đã gán ở trên.
+// Phải đặt SAU vòng lặp setY — gọi trước sẽ đọc toàn số 0 và mặt đất
+// bị phẳng hoàn toàn trong khi mắt vẫn thấy núi (chính là lỗi xuyên địa hình).
+HF.build(posAttr);
 
 
 // vertex color by height/slope
@@ -331,7 +417,7 @@ let ri=0;
 for(let i=0;i<900 && ri<rockCount;i++){
   const x=(Math.random()-0.5)*TERRAIN_SIZE;
   const z=(Math.random()-0.5)*TERRAIN_SIZE;
-  const y=heightAt(x,z);
+  const y=sampleHeight(x,z);
   if(y<-6) continue;
   const s=0.5+Math.random()*1.8;
   dummy.position.set(x, y+ s*0.35, z);
@@ -352,7 +438,7 @@ const pawMat=new THREE.MeshStandardMaterial({ color:0xffcc33, emissive:0xffa500,
 for(let i=0;i<18;i++){
   let x,z;
   do{ x=(Math.random()-0.5)*1200; z=(Math.random()-0.5)*1200; } while(biomeAt(x,z).biome.id==='storm' && Math.random()<0.6);
-  const y=heightAt(x,z)+1.4;
+  const y=sampleHeight(x,z)+1.4;
   const m=new THREE.Mesh(pawGeo, pawMat.clone());
   m.position.set(x,y,z);
   m.userData={ idx:i, x,z, y0:y, phase:Math.random()*Math.PI*2 };
@@ -376,23 +462,31 @@ const dustPoints=new THREE.Points(dustGeo, dustMat);
 scene.add(dustPoints);
 
 // Player (cat + vehicle)
+const _calTmp=new THREE.Vector3();
+const _calQ=new THREE.Quaternion(), _calE=new THREE.Euler(0,0,0,'YXZ');
+const _armQ=new THREE.Quaternion(), _armX=new THREE.Vector3(1,0,0), _armV=new THREE.Vector3();
 const player=new THREE.Group();
 scene.add(player);
-let playerPos=new THREE.Vector3(0, heightAt(0,0)+1.2, 0);
+let playerPos=new THREE.Vector3(0, sampleHeight(0,0)+VEHICLES[vehicleType].ride, 0);
 player.position.copy(playerPos);
 let playerYaw=0, playerPitch=0;
 
 let vRefs = { wheels:[], dish:null, mast:null, tail:null, head:null, scarves:[] };
+// Cache hình học bánh: {x,z} offset cục bộ, y = cao độ đáy bánh khi group ở gốc.
+let wCache=[];
 function buildVehicle(type){
   while(player.children.length) player.remove(player.children[0]);
-  vRefs = { wheels:[], dish:null, mast:null, tail:null, head:null, scarves:[] };
+  // KHÔNG gán lại vRefs: mọi ref đã push vào object cũ, gán lại sẽ làm rỗng
+  // wheels/disc/... và mọi logic bánh/đuôi im lặng. Chỉ xoá nội dung mảng.
+  vRefs.wheels.length=0; vRefs.scarves.length=0;
+  vRefs.dish=vRefs.mast=vRefs.tail=vRefs.head=vRefs.rim=null; vRefs.arms=[];
   const g=new THREE.Group();
   const wheelMat=new THREE.MeshStandardMaterial({color:0x1a1a1a, roughness:0.9});
   const frameMat=new THREE.MeshStandardMaterial({color:0xffcc33, metalness:0.5, roughness:0.35});
   const chrome=new THREE.MeshStandardMaterial({color:0xbfc7d0, metalness:0.85, roughness:0.25});
   // shadow disc
-  const shadow=new THREE.Mesh(new THREE.CircleGeometry(2.2,18), new THREE.MeshBasicMaterial({color:0x000000, transparent:true, opacity:0.22}));
-  shadow.rotation.x=-Math.PI/2; shadow.position.y=0.02; g.add(shadow);
+  const shadow=new THREE.Mesh(new THREE.CircleGeometry(2.2,18), new THREE.MeshBasicMaterial({color:0x000000, transparent:true, opacity:0.14, depthWrite:false}));
+  shadow.rotation.x=-Math.PI/2; shadow.position.y=0.02; shadow.renderOrder=-1; g.add(shadow);
   let body;
   if(type==='bike'){
     body=new THREE.Group();
@@ -405,12 +499,13 @@ function buildVehicle(type){
       const tire=new THREE.Mesh(new THREE.TorusGeometry(0.55,0.07,8,22), wheelMat); tire.rotation.y=Math.PI/2; w.add(tire);
       for(let s=0;s<5;s++){ const sp=new THREE.Mesh(new THREE.BoxGeometry(0.02,1.02,0.02), chrome); sp.rotation.z=s*Math.PI/5; w.add(sp); }
       const hub=new THREE.Mesh(new THREE.CylinderGeometry(0.07,0.07,0.12,8), chrome); hub.rotation.z=Math.PI/2; w.add(hub);
-      w.position.set(x,0.55,0); body.add(w); vRefs.wheels.push(w); return w;
+      w.position.set(x,0.55,0); w.userData.r=0.62; body.add(w); vRefs.wheels.push(w); return w;
     };
     mkWheel(-0.9); mkWheel(0.95);
     // seat + bars
     const seat=new THREE.Mesh(new THREE.BoxGeometry(0.3,0.08,0.16), wheelMat); seat.position.set(-0.05,1.12,0); body.add(seat);
     const bar=new THREE.Mesh(new THREE.BoxGeometry(0.3,0.04,0.5), frameMat); bar.position.set(1.05,1.06,0); body.add(bar);
+    vRefs.barPos={x:1.05,y:1.06,z:0,halfW:0.25};
     // giỏ mây + cá
     const basket=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.35,0.4), new THREE.MeshStandardMaterial({color:0xd9a86c, roughness:0.85})); basket.position.set(1.2,0.86,0); body.add(basket);
     const fish=new THREE.Mesh(new THREE.SphereGeometry(0.18,8,8), new THREE.MeshStandardMaterial({color:0x4fc3f7, emissive:0x0288d1, emissiveIntensity:0.35})); fish.scale.x=1.4; fish.position.set(1.2,1.1,0); body.add(fish);
@@ -428,8 +523,9 @@ function buildVehicle(type){
     const seat=new THREE.Mesh(new THREE.BoxGeometry(1.0,0.16,0.42), new THREE.MeshStandardMaterial({color:0x1a1a1a, roughness:0.8})); seat.position.set(-0.35,1.12,0); body.add(seat);
     const fork=new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,0.85,8), chrome); fork.position.set(0.85,0.72,0); fork.rotation.z=-0.35; body.add(fork);
     const hbar=new THREE.Mesh(new THREE.BoxGeometry(0.05,0.05,0.5), chrome); hbar.position.set(1.05,1.12,0); body.add(hbar);
+    vRefs.barPos={x:1.05,y:1.12,z:0,halfW:0.25};
     const mkW=(x)=>{ const w=new THREE.Group(); const tire=new THREE.Mesh(new THREE.TorusGeometry(0.42,0.115,8,18), wheelMat); tire.rotation.y=Math.PI/2; w.add(tire);
-      for(let s=0;s<4;s++){ const sp=new THREE.Mesh(new THREE.BoxGeometry(0.025,0.78,0.025), chrome); sp.rotation.z=s*Math.PI/4+0.4; w.add(sp);} w.position.set(x,0.45,0); body.add(w); vRefs.wheels.push(w); return w; };
+      for(let s=0;s<4;s++){ const sp=new THREE.Mesh(new THREE.BoxGeometry(0.025,0.78,0.025), chrome); sp.rotation.z=s*Math.PI/4+0.4; w.add(sp);} w.position.set(x,0.45,0); w.userData.r=0.535; body.add(w); vRefs.wheels.push(w); return w; };
     mkW(-1.05); mkW(1.05);
     const pipe=new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.07,0.9,8), chrome); pipe.rotation.z=Math.PI/2-0.08; pipe.position.set(-0.55,0.55,0.3); body.add(pipe);
     const lamp=new THREE.Mesh(new THREE.SphereGeometry(0.13,10,8), new THREE.MeshStandardMaterial({color:0xfff6a0, emissive:0xfff176, emissiveIntensity:0.9})); lamp.position.set(1.12,0.98,0); body.add(lamp);
@@ -438,6 +534,14 @@ function buildVehicle(type){
     g.add(body);
   } else {
     body=new THREE.Group();
+    // Vô-lăng rover: cánh vô-lăng Mèo nắm, đặt trước cabin
+    vRefs.barPos={x:0.62,y:1.34,z:0,halfW:0.30};
+    const wheelRim=new THREE.Mesh(new THREE.TorusGeometry(0.24,0.028,6,18), chrome);
+    wheelRim.position.set(vRefs.barPos.x, vRefs.barPos.y, 0);
+    wheelRim.rotation.y=Math.PI/2; wheelRim.rotation.x=0.5;
+    body.add(wheelRim); vRefs.rim=wheelRim;
+    for(let s=0;s<3;s++){ const sp=new THREE.Mesh(new THREE.BoxGeometry(0.42,0.02,0.02), chrome);
+      sp.position.copy(wheelRim.position); sp.rotation.x=s*Math.PI/3+0.5; body.add(sp); }
     const chassis=new THREE.Mesh(new THREE.BoxGeometry(2.2,0.42,1.15), new THREE.MeshStandardMaterial({color:0xd9cfc0, metalness:0.3, roughness:0.5}));
     chassis.position.set(0,1.02,0); body.add(chassis);
     // золотая foil belly
@@ -465,7 +569,7 @@ function buildVehicle(type){
       const w=new THREE.Group();
       const tire=new THREE.Mesh(new THREE.CylinderGeometry(0.34,0.34,0.26,14), wheelMat); tire.rotation.z=Math.PI/2; w.add(tire);
       for(let s=0;s<6;s++){ const cleat=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.1,0.28), chrome); const a=s*Math.PI/3; cleat.position.set(0, Math.cos(a)*0.34, Math.sin(a)*0.34); cleat.rotation.x=-a; w.add(cleat); }
-      w.position.set(armX,0,0); leg.add(w); vRefs.wheels.push(w);
+      w.position.set(armX,0,0); w.userData.r=0.34; leg.add(w); vRefs.wheels.push(w);
       leg.position.set(x,0.72,z); body.add(leg); return leg;
     };
     mkW(1.05,0.68,0.5); mkW(1.05,-0.68,-0.5);
@@ -492,67 +596,250 @@ function buildVehicle(type){
   const tail=new THREE.Group();
   const t1=new THREE.Mesh(new THREE.CapsuleGeometry(0.06,0.3,4,8), fur); t1.position.set(-0.15,0,0); t1.rotation.z=0.9; tail.add(t1);
   const t2=new THREE.Mesh(new THREE.CapsuleGeometry(0.05,0.25,4,8), furDark); t2.position.set(-0.4,0.16,0); t2.rotation.z=1.5; tail.add(t2);
-  tail.position.set(-0.35,1.5,0); cat.add(tail); vRefs.tail=tail;
+  tail.position.set(-0.52,1.34,0); tail.scale.set(0.85,0.85,0.85); cat.add(tail); vRefs.tail=tail;
   // chân đạp (bike)
   if(type==='bike'){
     for(const dz of [0.14,-0.14]){
       const leg=new THREE.Mesh(new THREE.CapsuleGeometry(0.05,0.22,4,8), fur); leg.position.set(0.02,1.28,dz); cat.add(leg);
     }
   }
+
+  // ══════ HAI CÁNH TAY LÁI XE ══════
+  // Mèo ngồi trên yên, hai tay vươn ra nắm ghi đông. Mỗi tay gồm: cánh tay
+  // (xoay được ở vai) + bàn tay (xoay ở cổ tay) + mũi ên nhô ra. Nhờ vRefs
+  // mà góc nhìn thứ nhất thấy rõ Mèo đang lái: cánh tay bám ghi đông, bàn tay
+  // xoay theo vô-lăng, tay nhấp nhô khi xe lên xuống.
+  const armMat = new THREE.MeshStandardMaterial({color:0xffc933, roughness:0.75});
+  const pawMat  = new THREE.MeshStandardMaterial({color:0xfff0c2, roughness:0.6});
+  vRefs.arms = [];
+  for(const side of [1,-1]){
+    const shoulder = new THREE.Group();
+    shoulder.position.set(0.10, 1.66, side*0.19);       // vai (thấp & rộng để tay thấy rõ)
+    // cánh tay: hình hộp vát, hướng về trước
+    const upper = new THREE.Mesh(new THREE.CapsuleGeometry(0.065,0.30,4,8), armMat);
+    upper.rotation.z = Math.PI/2;                        // nằm ngang, chĩa +X
+    upper.position.set(0.17,0,0);
+    shoulder.add(upper);
+    // cổ tay
+    const wrist = new THREE.Group();
+    wrist.position.set(0.34,0,0);
+    const paw = new THREE.Mesh(new THREE.SphereGeometry(0.085,10,8), pawMat);
+    paw.scale.set(1,0.85,0.9);
+    wrist.add(paw);
+    // ba ngón mấu ôm ghi đông
+    for(let f=0; f<3; f++){
+      const toe = new THREE.Mesh(new THREE.CapsuleGeometry(0.022,0.05,3,6), pawMat);
+      toe.position.set(0.06, -0.035 + f*0.035, (f-1)*0.045);
+      toe.rotation.z = -0.5;
+      wrist.add(toe);
+    }
+    shoulder.add(wrist);
+    cat.add(shoulder);
+    vRefs.arms.push({ shoulder, wrist, side });
+  }
+
   g.add(cat);
   cat.name='cat';
+  // Đèn phụ gắn theo xe: giữ Mèo & cánh tay luôn đủ sáng khi nhìn từ góc
+  // thứ nhất, tránh bóng tối đọc không ra hình dạng.
+  const keyLight=new THREE.PointLight(0xffd9a0, 1.15, 6, 2);
+  keyLight.position.set(0.55, 2.3, 0.15);
+  g.add(keyLight);
+  const fillLight=new THREE.PointLight(0xffb877, 0.55, 5, 2);
+  fillLight.position.set(-0.5, 1.9, -0.5);
+  g.add(fillLight);
   player.add(g);
+
+  // ---- AUTO-CALIBRATE ride height --------------------------------------
+  // ride = world Y của đáy bánh khi group ĐẶT TẠI GỐC. Phải tạm dời group về
+  // y=0 (và bỏ rotation) trước khi đo, nếu không sẽ đo theo vị trí hiện tại và
+  // ra số sai -> xe lơ lửng.
+  const _sPos=player.position.clone(), _sRot=player.rotation.clone();
+  player.position.set(0,0,0);
+  player.rotation.set(0,0,0,'YXZ');
+  player.updateMatrixWorld(true);
+  let lowest=Infinity;
+  for(const w of vRefs.wheels){
+    if(!w) continue;
+    w.updateMatrixWorld(true);
+    const bottom = w.getWorldPosition(_calTmp).y - (w.userData.r||0);
+    if(bottom<lowest) lowest=bottom;
+  }
+  // CHƯA restore ở đây: phần đo cache bên dưới cũng cần group ở gốc.
+  // (Trước đây restore sớm khiến cache đo tại vị trí thật → ride sai → xe
+  //  lơ lửng hàng mét.)
+
+  // ---- Suy ra điểm tiếp xúc từ vị trí bánh THẬT --------------------------
+  // conf.wheels trước đây hard-code và lệch với model (đặc biệt rover có 6
+  // bánh trong các group leg lồng nhau) -> xe bị treo lơ lửng. Đọc thẳng từ
+  // world matrix nên luôn khớp với hình học, kể cả khi sửa model sau này.
+  // Vị trí bánh phải CHUYỂN VỀ KHÔNG GIAN CỤC BỘ của group `g` (xe), không
+  // phải world: bánh rover nằm trong các group `leg` đã xoay, nên world offset
+  // bị xoay theo và sai hoàn toàn. Dùng g.worldToLocal trên điểm bánh.
+  // Cache đủ thông tin để tính clearance mà không cần world matrix:
+  //   x,z = offset cục bộ (đã trừ cấu trúc leg lồng nhau), y = đáy bánh.
+  // group `g` đang ở y=0 lúc này (đã đặt ở đầu hàm) nên world == local:
+  // y chính là cao độ đáy bánh so với gốc group. Dùng getWorldPosition rồi
+  // worldToLocal sẽ ra đúng, NHƯNG phải đảm bảo ma trận đã cập nhật.
+  const cache=[];
+  for(const w of vRefs.wheels){
+    if(!w) continue;
+    w.updateMatrixWorld(true);
+    w.getWorldPosition(_calTmp);
+    // worldToLocal SỬA CHỈNH TẠI chính _calTmp — phải đọc ra số trước rồi mới
+    // chuyển, nếu không vị trí của bánh trước sẽ bị bánh sau ghi đè (biến chung).
+    const wxp=_calTmp.x, wyp=_calTmp.y, wzp=_calTmp.z;
+    g.worldToLocal(_calTmp);
+    cache.push({ x:_calTmp.x, z:_calTmp.z, y:wyp, r:(w.userData.r||0) });
+  }
+  if(cache.length>=3){
+    wCache = cache;
+    VEHICLES[type].wheels = cache.map(c=>[+c.x.toFixed(4), +c.z.toFixed(4)]);
+    // ride = đáy bánh THẤP NHẤT đo bằng world matrix thật (group đang ở gốc).
+    // Không dùng c.y-c.r vì bánh rover nằm trong group `leg` đã xoay, nên cao độ
+    // local khác cao độ thực tế -> ride lệch -> xe treo lơ lửng cả mét.
+    let lowWorld = Infinity;
+    for(const w of vRefs.wheels){
+      if(!w) continue;
+      w.updateMatrixWorld(true);
+      const wy = w.getWorldPosition(_calTmp).y;
+      const bottom = wy - (w.userData.r||0);
+      if(bottom < lowWorld) lowWorld = bottom;
+    }
+    if(Number.isFinite(lowWorld)) VEHICLES[type].ride = lowWorld;
+  }
+  // Đã đo xong ở gốc → trả group về vị trí thật.
+  player.position.copy(_sPos);
+  player.rotation.copy(_sRot);
 }
 
 buildVehicle(vehicleType);
 
 // wheel spin helper: find wheels by traversal and spin
 let wheelSpin=0;
+let targetPitch=0, targetRoll=0;
 
+
+// ══════ ĐỘNG TÁC LÁI: cánh tay Mèo Vàng bám ghi đông ══════
+// Mục tiêu: nhìn từ góc thứ nhất phải ĐỌC ĐƯỢC ra Mèo đang lái thế nào —
+//   • tay bám đúng lên ghi đông/vô-lăng của từng xe (dùng vRefs.barPos)
+//   • bàn tay xoay theo góc lái thật (input.l-r) → thấy vô-lăng đang nghiêng
+//   • vai nhấp nhô nhẹ khi xe chạy, tay hơi chùng xuống khi chạy chậm
+//   • ghi đông xoay theo bánh xe đang quay
+let steerVis = 0, armBob = 0;
+function updateRidingPose(dt, steerInput, speed, boosting){
+  if(!vRefs.arms || !vRefs.arms.length) return;
+  const bar = vRefs.barPos;
+  if(!bar) return;
+
+  // Góc lái hiển thị: nội suy mềm về 0 khi không vào cua
+  const target = THREE.MathUtils.clamp(steerInput, -1, 1);
+  steerVis += (target - steerVis) * Math.min(1, dt*9);
+  const swing = steerVis * 0.62;                    // rad, ~36° khi hết cỡ
+
+  // Nhịp nhấp nhô: nhanh khi chạy nhanh, gần như đứng yên khi dừng
+  const sp = Math.min(1, Math.abs(speed)/8);
+  armBob += dt * (2.2 + sp*9.0);
+  const bobAmt = sp * 0.035;
+
+  for(const arm of vRefs.arms){
+    const s = arm.side;                              // +1 trái, -1 phải
+    // Vị trí bàn tay: hai bên ghi đông, cách nhau 2*halfW
+    const hx = bar.halfW * s * 0.86;
+    const hy = bar.y + bobAmt*Math.sin(armBob) - 0.02;
+    const hz = 0;
+
+    // Tính vector vai -> bàn tay trong không gian group mèo
+    const sx = 0.16, sy = 1.72, sz = 0.17*s;
+    let dx = hx - sx, dy = hy - sy, dz = hz - sz;
+    const len = Math.hypot(dx,dy,dz) || 1e-6;
+    dx/=len; dy/=len; dz/=len;
+
+    // Đặt cánh tay hướng về bàn tay: quaternion từ trục X sang vector (dx,dy,dz)
+    arm.shoulder.position.set(sx, sy, sz);
+    _armQ.setFromUnitVectors(_armX.set(1,0,0), _armV.set(dx,dy,dz));
+    arm.shoulder.quaternion.copy(_armQ);
+    // Cánh tay dài = khoảng cách vai->tay, nên scale theo
+    arm.shoulder.scale.set(len/0.34, 1, 1);
+
+    // Bàn tay: hơi nghiêng theo góc lái (bàn tay trên vô-lăng xoay theo)
+    arm.wrist.rotation.z = swing * 0.45;
+    arm.wrist.rotation.x = -0.5 + swing*0.12;
+    arm.wrist.position.set(0.34, 0, 0);
+  }
+
+  // Ghi đông/vô-lăng xoay theo góc lái (nhìn thấy rõ từ góc thứ nhất)
+  if(vRefs.rim) vRefs.rim.rotation.z = swing;
+  // Dao động nhẹ khi boost
+  if(boosting) for(const arm of vRefs.arms) arm.wrist.rotation.y = Math.sin(now*0.05)*0.12;
+}
 
 // ---------- Camera helpers ----------
 let camMode=1; // 0 first, 1 third, 2 orbit
 let camYaw=0.6, camPitch=0.28, camDist=10;
 let isDragging=false, lastX=0, lastY=0;
 
+const _camTmp=new THREE.Vector3(), _camFwd=new THREE.Vector3(), _camLook=new THREE.Vector3();
+
+// camera KHÔNG được chui xuống đất: nâng lên nếu thấp hơn mặt đất tại vị trí đó
+function keepCamAboveGround(min=1.2){
+  const g=sampleHeight(camera.position.x, camera.position.z)+min;
+  if(camera.position.y < g) camera.position.y = g;
+}
 function updateCamera(dt){
+  const py = sampleHeight(playerPos.x, playerPos.z)+1.2;
   if(photoMode || camMode===2){
-    // free orbit around player
     const r=camDist;
     const x = playerPos.x + Math.cos(camYaw)*Math.cos(camPitch)*r;
-    const y = heightAt(playerPos.x, playerPos.z)+ 1.2 + Math.sin(camPitch)*r + 1.0;
+    const y = py + Math.sin(camPitch)*r + 1.0;
     const z = playerPos.z + Math.sin(camYaw)*Math.cos(camPitch)*r;
-    camera.position.lerp(new THREE.Vector3(x,y,z), 0.12);
-    camera.lookAt(playerPos.x, heightAt(playerPos.x, playerPos.z)+1.2, playerPos.z);
+    camera.position.lerp(_camTmp.set(x,y,z), 0.12);
+    keepCamAboveGround(0.8);
+    camera.lookAt(playerPos.x, py, playerPos.z);
     return;
   }
   if(camMode===0){
-    const fwd=new THREE.Vector3(Math.cos(playerYaw),0,Math.sin(playerYaw));
-    camera.position.copy(playerPos).addScaledVector(fwd, 0.9);
-    camera.position.y = heightAt(playerPos.x, playerPos.z)+1.55;
-    const look=new THREE.Vector3().copy(playerPos).addScaledVector(fwd, 12);
-    camera.lookAt(look);
+    // ── GÓC NHÌN THỨ NHẤT: NGỒI SAU LƯNG MÈO ──
+    // Camera đặt ngay sau đầu Mèo Vàng và cao hơn một chút, hơi cúi xuống.
+    // Nhờ vậy khung hình luôn có: đầu mèo (mũ + tai) ở giữa dưới, HAI CÁNH TAY
+    // vươn ra nắm ghi đông, và bàn tay xoay theo góc lái — đọc được ngay
+    // Mèo đang lái sang trái hay phải, đang nhanh hay chậm.
+    // Camera lùi lại SAU VAI MÈO một chút (và cao hơn đầu), để khung hình có
+    // đủ khoảng cho: vai + hai cánh tay đang nắm ghi đông ở nửa dưới, còn
+    // phía trên mở ra tầm nhìn đường đi. Khoảng cách ~1.1m + nhìn xuống nhẹ.
+    const fwd=_camFwd.set(Math.cos(playerYaw),0,Math.sin(playerYaw));
+    const right=_camTmp.set(-fwd.z,0,fwd.x);              // hướng bên phải
+    // Rover cabin to hơn & mèo ngồi cao hơn -> camera phải lùi xa và cao hơn
+    // một chút, nếu không cabin sẽ chiếm gần hết khung hình.
+    const isRover = vehicleType === 'rover';
+    camera.position.copy(playerPos).addScaledVector(fwd, isRover ? -3.05 : -2.35);
+    camera.position.y = playerPos.y + (isRover ? 3.30 : 2.95);
+    keepCamAboveGround(0.9);
+    // Nhìn về phía trước, hạ thấp vừa phải để tay + ghi đông nằm trong khung
+    const lookAhead = isRover ? 12.0 : 11.0;
+    _camLook.copy(playerPos).addScaledVector(fwd, lookAhead);
+    _camLook.y = playerPos.y + (isRover ? 1.05 : 0.80);  // nhìn xuống rõ tay
+    // Nghiêng camera theo góc lái để có cảm giác vào cua
+    _camLook.addScaledVector(right, steerVis * 2.2);
+    camera.lookAt(_camLook);
   } else {
     const r=camDist;
     const yaw = playerYaw + 0.15;
     const x = playerPos.x - Math.cos(yaw)*r*0.95;
     const z = playerPos.z - Math.sin(yaw)*r*0.95;
-    const y = heightAt(playerPos.x, playerPos.z)+ 2.8 + Math.sin(0.35)*1.2;
-    // clamp terrain
+    const y = sampleHeight(playerPos.x, playerPos.z)+ 2.8 + Math.sin(0.35)*1.2;
     const tx = THREE.MathUtils.lerp(camera.position.x, x, 0.08);
     const tz = THREE.MathUtils.lerp(camera.position.z, z, 0.08);
-    const ty = THREE.MathUtils.lerp(camera.position.y, y, 0.08);
+    let ty = THREE.MathUtils.lerp(camera.position.y, y, 0.08);
     camera.position.set(tx,ty,tz);
-    camera.lookAt(playerPos.x, heightAt(playerPos.x, playerPos.z)+1.0, playerPos.z);
+    keepCamAboveGround(1.4);
+    camera.lookAt(playerPos.x, sampleHeight(playerPos.x, playerPos.z)+1.0, playerPos.z);
   }
 }
-
-// ---------- Terrain height sampling for player ----------
-function sampleHeight(x,z){
-  // bilinear from terrain geo is heavy; use heightAt for gameplay, lerp visually
-  return heightAt(x,z);
-}
-
+// ---------- Heightfield: đọc CHÍNH mesh đang vẽ (nguồn sự thật duy nhất) ----------
+// Lý do: mesh là tam giác phẳng nội suy giữa 161×161 vertex. heightAt() là hàm
+// giải tích liên tục -> ở GIỮA Ô nó khác bề mặt thật, khiến xe chìm/xuyên địa hình.
+// Ta dựng heightfield từ chính posAttr của terrain rồi nội suy tam giác — khớp 100% GPU.
 // ---------- Minimap ----------
 const miniCtx=minimap.getContext('2d');
 const bigCtx=bigmap.getContext('2d');
@@ -620,7 +907,7 @@ function drawBigMap(){
   const step=22;
   for(let x=-TERRAIN_SIZE/2; x<TERRAIN_SIZE/2; x+=step){
     for(let z=-TERRAIN_SIZE/2; z<TERRAIN_SIZE/2; z+=step){
-      const hh=heightAt(x,z);
+      const hh=sampleHeight(x,z);
       const t=THREE.MathUtils.clamp((hh+10)/110,0,1);
       const r=Math.floor(180+t*70), g=Math.floor(70+t*60), b=Math.floor(30+t*20);
       const bi=biomeAt(x,z).biome;
@@ -867,7 +1154,7 @@ document.getElementById('btn-map').onclick=()=> toggleMap();
 document.getElementById('btn-map-close').onclick=()=> toggleMap(false);
 document.getElementById('btn-map-go').onclick=()=>{
   const b=BIOMES[targetBiomeIdx];
-  playerPos.set(b.pos.x, sampleHeight(b.pos.x,b.pos.z)+1.5, b.pos.z);
+  playerPos.set(b.pos.x, sampleHeight(b.pos.x,b.pos.z)+VEHICLES[vehicleType].ride, b.pos.z);
   playerYaw=Math.random()*Math.PI*2;
   toggleMap(false);
   showToast(b.icon, `Đã dịch chuyển tới ${b.name}`, b.desc);
@@ -970,6 +1257,87 @@ function stormLevelHud(s){
     const pill=document.getElementById('hud-storm');
     if(pill){ pill.style.display = s>0.08?'flex':'none'; pill.querySelector('b').textContent=lvl; }
   }
+}
+
+// ---- helper: đặt group lên mặt đất bằng điểm tiếp xúc bánh xe ----
+// Với 4 điểm bánh: lấy max chiều cao (bánh cao nhất chạm trước → không chìm),
+// và suy ra pitch/roll từ mặt phẳng nghiêng qua 4 điểm đó.
+const _up=new THREE.Vector3(0,1,0), _nrm=new THREE.Vector3();
+const _q=new THREE.Quaternion(), _eul=new THREE.Euler(0,0,0,'YXZ');
+function settleToGround(){
+  const conf=VEHICLES[vehicleType];
+  const cy=Math.cos(playerYaw), sy=Math.sin(playerYaw);
+  let maxH=-Infinity, sumH=0;
+  const hz=[];
+  for(const [lx,lz] of conf.wheels){
+    // xoay offset cục bộ theo yaw
+    const wx = playerPos.x + (lx*cy - lz*sy);
+    const wz = playerPos.z + (lx*sy + lz*cy);
+    const h = sampleHeight(wx, wz);
+    hz.push({lx,lz,h});
+    if(h>maxH) maxH=h;
+    sumH+=h;
+  }
+  // --- Đặt Y sao cho KHÔNG BÁNH NÀO CHÌM VÀO ĐẤT -----------------------
+  // Ý tưởng: y = max( ground_i + ride ) trên mọi bánh. Bánh nào có đất cao
+  // nhất sẽ ép xe lên, đảm bảo mọi bánh còn lại nằm trên hoặc ngang mặt đất.
+  // Cộng SKIN một chút cho lốp có ren gai/vanh nhô ra ngoài bán kính lý thuyết,
+  // nếu thiếu xe sẽ ăn đất vài cm.
+  // SKIN tương đối theo kích thước bánh: lốp có ren gai/vanh nhô ra ngoài bán
+  // kính lý thuyết nên cần chút lề. Tỷ lệ 25% bán kính nhỏ nhất giữ xe sát
+  // đất với xe máy (bán kính nhỏ) mà không chìm với rover to.
+  const minR = Math.min(...wCache.map(c=>c.r));
+  const SKIN = minR * 0.25;
+  playerPos.y = maxH + conf.ride + SKIN;
+  // ---- Nghiêng xe: suy từ CHÍNH 4 điểm tiếp xúc bánh (đã lấy ở trên) ----
+  // Dùng phương pháp bình phương nhỏ nhất trên 4 điểm thay vì pháp tuyến của
+  // 1 tam giác: ổn định, không nhảy góc khi bánh lọt sang ô kế bên, và tự
+  // nhiên cho pitch/roll hợp với việc 3-4 bánh cùng chạm đất.
+  let n=hz.length;
+  let sxz=0, sz2=0, syz=0, szz=0, sxy=0, szy=0;
+  for(const q of hz){
+    const lx=q.lx, lz=q.lz;              // offset cục bộ đã gán trục X=fwd, Z=lateral
+    sxz+=lx; sz2+=lz*lz; syz+=q.h*lz; szz+=lz;
+    sxy+=lx*q.h; szy+=q.h;
+  }
+  // dốc theo trục fwd (X) và lateral (Z), giải hệ 2 phương trình
+  const det=n*sz2 - szz*szz;
+  const pitch = Math.abs(det)>1e-6 ? (n*sxy - szz*szy)/det : 0;
+  const roll  = Math.abs(det)>1e-6 ? (n*syz - szz*sxy)/det : 0;
+  // GIỚI HẠN góc: một cell dốc không được làm xe nghiêng quá mức
+  const MAX_TILT = 0.30;
+  targetPitch = Math.atan(Math.max(-MAX_TILT, Math.min(MAX_TILT, pitch)));
+  targetRoll  = Math.atan(Math.max(-MAX_TILT, Math.min(MAX_TILT, -roll)));
+
+  // ---- HIỆU CHỈNH CUỐI: bảo đảm tuyệt đối không bánh nào chìm -------------
+  // Sau khi đã biết pitch/roll, tính world-offset của từng bánh thật sự (bánh
+  // rover nằm trong group leg đã xoay nên world offset KHÔNG còn nằm trên
+  // mặt phẳng của group), rồi nâng xe lên đúng mức còn thiếu. Đây là bước
+  // chốt chặn cuối — sau nó thì clearance của mọi bánh >= 0.
+  // Mỗi bánh đã lưu sẵn: localXZ (offset cục bộ trong group) + localY (cao độ
+  // đáy bánh khi group ở gốc) + r. Tính clearance bằng phép biến đổi yaw+pitch
+  // TRÊN CHÍNH offset đó — không đụng tới world matrix (đang phản ánh vị trí
+  // của frame trước, nên dùng nó sẽ nhảy lung tung).
+  const cp=Math.cos(targetPitch), sp=Math.sin(targetPitch);
+  const cr=Math.cos(targetRoll),  sr=Math.sin(targetRoll);
+  const cyw=Math.cos(-playerYaw), syw=Math.sin(-playerYaw);
+  let need = 0;
+  for(const w of wCache){
+    // xoay yaw quanh trục Y
+    const wx = playerPos.x + (w.x*cyw - w.z*syw);
+    const wz = playerPos.z + (w.x*syw + w.z*cyw);
+    // local (0, w.y, 0) -> nghiêng pitch(X) rồi roll(Z)
+    const yl = w.y;
+    const dy = yl*cp;
+    const dx = -yl*sp;
+    const dz = yl*sr*cp;               // phần do roll nhấc theo phía bên
+    const gx = wx + dx*cyw - dz*syw;
+    const gz = wz + dx*syw + dz*cyw;
+    const bottom = playerPos.y + dy - w.r;
+    const c = bottom - sampleHeight(gx, gz);
+    if(-c > need) need = -c;
+  }
+  if(need > 0.001) playerPos.y += need + 0.02;
 }
 
 // ---------- Main loop ----------
@@ -1315,7 +1683,7 @@ function frame(now){
   requestAnimationFrame(frame);
   const dt=Math.min(0.033, (now-lastT)/1000); lastT=now;
 
-  // movement
+  // ══════ MOVEMENT (sửa xuyên địa hình) ══════
   const conf=VEHICLES[vehicleType];
   let fwd = input.f - input.b;
   let turn = input.r - input.l;
@@ -1329,34 +1697,63 @@ function frame(now){
   if(Math.abs(speed)>0.01){
     playerYaw += turn * conf.turn * dt * (speed>0?1:-1) * (Math.abs(speed)/conf.speed*0.9+0.2);
     const distStep = speed * dt * 12;
-    const nx = playerPos.x + Math.cos(playerYaw)*distStep;
-    const nz = playerPos.z + Math.sin(playerYaw)*distStep;
-    // clamp world
-    const nxC=THREE.MathUtils.clamp(nx, -TERRAIN_SIZE/2+8, TERRAIN_SIZE/2-8);
-    const nzC=THREE.MathUtils.clamp(nz, -TERRAIN_SIZE/2+8, TERRAIN_SIZE/2-8);
-    const h0=sampleHeight(playerPos.x, playerPos.z);
-    const h1=sampleHeight(nxC, nzC);
-    // slope limit per vehicle
-    const slope=Math.abs(h1-h0)/Math.max(0.1, Math.hypot(nxC-playerPos.x, nzC-playerPos.z));
-    let allow=true;
-    if(vehicleType==='bike' && slope>0.72) allow=false;
-    if(vehicleType==='moto' && slope>1.15) allow=false;
-    // rover can go anywhere but slower uphill
-    const uphill = Math.max(0, h1-h0);
-    const slow = THREE.MathUtils.clamp(1 - uphill*0.09, 0.32, 1);
-    if(allow){
-      playerPos.set(nxC, h1+1.18, nzC);
-      distance += Math.hypot(nxC, nzC) ? Math.abs(distStep)*0.06*slow : 0;
-      wheelSpin += Math.abs(distStep)*4.2;
+    // ---- SUB-STEP: không bao giờ nhảy quá 1/4 ô địa hình (chống xuyên sườn) ----
+    const MAX_SUB = HF.cell*0.25;
+    const steps = Math.max(1, Math.ceil(Math.abs(distStep)/MAX_SUB));
+    const sub = distStep/steps;
+    let moved=0;
+    for(let s=0;s<steps;s++){
+      const nx = playerPos.x + Math.cos(playerYaw)*sub;
+      const nz = playerPos.z + Math.sin(playerYaw)*sub;
+      const nxC=THREE.MathUtils.clamp(nx, -TERRAIN_SIZE/2+8, TERRAIN_SIZE/2-8);
+      const nzC=THREE.MathUtils.clamp(nz, -TERRAIN_SIZE/2+8, TERRAIN_SIZE/2-8);
+      // slope đo trên heightfield thật
+      const sl = slopeAt(nxC, nzC);
+      // giới hạn riêng từng xe (bike không leo dốc đứng, rover leo thoải mái)
+      if(sl > conf.maxSlope) continue;
+      // chặn "leo tường": nếu chênh cao quá bước đi được thì trượt xuống
+      const h0=sampleHeight(playerPos.x, playerPos.z);
+      const h1=sampleHeight(nxC, nzC);
+      const stepLen=Math.max(0.001, Math.hypot(nxC-playerPos.x, nzC-playerPos.z));
+      if(Math.abs(h1-h0)/stepLen > conf.maxSlope) continue;
+      playerPos.x=nxC; playerPos.z=nzC;
+      const uphill=Math.max(0,h1-h0);
+      const slow=THREE.MathUtils.clamp(1-uphill*0.09,0.32,1);
+      moved += Math.abs(sub)*0.06*slow;
+      wheelSpin += Math.abs(sub)*4.2;
     }
-    // bobbing
-    const bob = Math.sin(now*0.012 * (Math.abs(speed)+1.2))* conf.bob*0.08 * Math.abs(fwd);
-    playerPos.y = sampleHeight(playerPos.x, playerPos.z)+1.18 + Math.max(0,bob);
-  } else {
-    playerPos.y = sampleHeight(playerPos.x, playerPos.z)+1.18;
+    distance += moved;
   }
+  settleToGround();
+  // bob nhẹ (chỉ khi đang chạy)
+  const bob = Math.abs(speed)>0.01 ? Math.sin(now*0.012*(Math.abs(speed)+1.2))*conf.bob*0.08*Math.abs(fwd) : 0;
+  playerPos.y += Math.max(0,bob);
   player.position.copy(playerPos);
-  player.rotation.y = playerYaw;
+  // ══════ HƯỚNG XE: yaw đúng trục + nghiêng theo địa hình ══════
+  // Lưu ý: mô hình có +X là hướng đi, nên yaw phải là -playerYaw
+  // (Three.js rotateY dương đưa +X về +Z, còn phương đi là (cos,sin) ở XZ).
+  player.rotation.set(targetPitch, -playerYaw, targetRoll, 'YXZ');
+
+  // ══════ CHỐT CHẶN CUỐI: không bánh nào được chìm vào địa hình ══════
+  // Ở đây transform đã áp dụng xong nên đọc world matrix là chính xác tuyệt
+  // đối (không suy luận từ công thức). Nếu bánh nào thấp hơn mặt đất, nâng
+  // cả xe lên đúng mức thiếu. Đây là lưới an toàn cuối cùng — kể cả khi
+  // wCache/ride lệch nhẹ vì model được sửa, xe vẫn không bao giờ xuyên đất.
+  player.updateMatrixWorld(true);
+  let needLift = 0;
+  for(const w of vRefs.wheels){
+    if(!w) continue;
+    w.updateMatrixWorld(true);
+    w.getWorldPosition(_camTmp);
+    const clear = (_camTmp.y - (w.userData.r||0)) - sampleHeight(_camTmp.x, _camTmp.z);
+    if(-clear > needLift) needLift = -clear;
+  }
+  if(needLift > 0){
+    playerPos.y += needLift;
+    player.position.y = playerPos.y;
+    player.updateMatrixWorld(true);
+  }
+
   // wheel spin + life animation (refs, không traverse)
   for(const w of vRefs.wheels){ w.rotation.x += wheelSpin*0.06; }
   wheelSpin *= 0.90;
@@ -1434,6 +1831,8 @@ function frame(now){
   maybeShootingStar(now);
   updateJournalPhase3();
 
+  // Động tác lái: cánh tay mèo bám ghi đông, xoay theo input.l-r thật
+  updateRidingPose(dt, (input.l?1:0) - (input.r?1:0), speedKmh, input.boost);
   updateCamera(dt);
   renderer.render(scene, camera);
 }
@@ -1474,4 +1873,35 @@ const loadIv=setInterval(()=>{
 loadText.textContent='Đang dựng đồng bằng Arcadia và đánh thức Mèo Vàng...';
 
 // expose for debug
-window.__yc={ scene, player, BIOMES, POIS, heightAt, discovered, setPlayerPos(x,z){ playerPos.set(x, heightAt(x,z)+1.18, z); player.position.copy(playerPos); }, forceStorm(){ stormTarget=0.9; stormEndsAt=performance.now()+30000; stormBanner.style.display='flex'; }, galleryList, refreshGalleryCache, openDiscovery, saveState(){ save(); return { distance, collected, discovered:[...discovered], playTimeSec }; } };
+window.__yc={ scene, player, camera, renderer, BIOMES, POIS, heightAt, sampleHeight, slopeAt, discovered, VEHICLES, setPlayerPos(x,z){ playerPos.x=x; playerPos.z=z; playerPos.y=sampleHeight(x,z)+VEHICLES[vehicleType].ride; settleToGround(); player.position.copy(playerPos); player.rotation.set(targetPitch, -playerYaw, targetRoll, 'YXZ'); player.updateMatrixWorld(true); },
+  setVehicle(t){ setVehicle(t); },
+  setCam(m){ camMode=m; },
+  poseInfo(){ return { camMode, steerVis:+steerVis.toFixed(3), arms: vRefs.arms?vRefs.arms.length:0, bar: vRefs.barPos||null }; },
+  wheels(){ return vRefs.wheels; },
+  wheelCache(){ return wCache; },
+  rides(){ return Object.fromEntries(Object.entries(VEHICLES).map(([k,v])=>[k,v.ride])); },
+  rideReport(){
+    // Đo BẰNG ĐÚNG công thức mà settleToGround dùng (wCache + yaw/pitch/roll),
+    // nếu không phép đo sẽ lệch với hành vi thật của game.
+    const cp=Math.cos(targetPitch), sp=Math.sin(targetPitch);
+    const sr=Math.sin(targetRoll);
+    const cyw=Math.cos(-playerYaw), syw=Math.sin(-playerYaw);
+    let minClear=Infinity, sumClear=0, n=0;
+    for(const w of wCache){
+      const wx = playerPos.x + (w.x*cyw - w.z*syw);
+      const wz = playerPos.z + (w.x*syw + w.z*cyw);
+      const dy = w.y*cp;
+      const dx = -w.y*sp;
+      const dz = w.y*sr*cp;
+      const gx = wx + dx*cyw - dz*syw;
+      const gz = wz + dx*syw + dz*cyw;
+      const clear = (playerPos.y + dy - w.r) - sampleHeight(gx, gz);
+      if(clear<minClear) minClear=clear;
+      sumClear+=clear; n++;
+    }
+    return { veh:vehicleType, minClear, hover:sumClear/Math.max(1,n),
+             pitch:targetPitch, roll:targetRoll };
+  },
+
+  forceSettle(){ settleToGround(); player.position.copy(playerPos); player.rotation.set(targetPitch, -playerYaw, targetRoll, 'YXZ'); },
+  get hf(){ return HF; }, forceStorm(){ stormTarget=0.9; stormEndsAt=performance.now()+30000; stormBanner.style.display='flex'; }, galleryList, refreshGalleryCache, openDiscovery, saveState(){ save(); return { distance, collected, discovered:[...discovered], playTimeSec }; } };
