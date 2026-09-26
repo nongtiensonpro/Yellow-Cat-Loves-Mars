@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { decodePatches, PATCH_N, PATCH_ORDER, PATCH_IDX, PATCH_RELIEF } from './mola-patches.js';
 
 // ---------- Config ----------
 const BIOMES = [
@@ -109,6 +110,7 @@ sun.shadow.camera.near = 1; sun.shadow.camera.far = 1400;
 sun.shadow.camera.left=-600; sun.shadow.camera.right=600; sun.shadow.camera.top=600; sun.shadow.camera.bottom=-600;
 sun.shadow.bias = -0.0005;
 scene.add(sun);
+const SUN_BASE_I=1.6, AMB_BASE_I=0.85;
 
 // Sky dome
 const skyGeo = new THREE.SphereGeometry(2000, 32, 22);
@@ -186,6 +188,25 @@ function biomeAt(x,z){
   return { biome:best, dist:bestD };
 }
 
+// ---- REAL MOLA patches (NASA PIA02031, public domain) ----
+const MOLA_PLANES = decodePatches();
+const MOLA_R = 320;              // world radius a biome patch covers
+function patchHeightAt(bi, x, z){
+  const b = BIOMES[bi];
+  const u = (x - b.pos.x)/(MOLA_R*2) + 0.5;
+  const v = (z - b.pos.z)/(MOLA_R*2) + 0.5;
+  if(u<0||u>1||v<0||v>1) return null;           // outside real-data window
+  const N = PATCH_N;
+  const fx = u*(N-1), fy = v*(N-1);
+  const i0 = Math.floor(fx), j0 = Math.floor(fy);
+  const i1 = Math.min(N-1,i0+1), j1 = Math.min(N-1,j0+1);
+  const tx = fx-i0, ty = fy-j0;
+  const P = MOLA_PLANES[bi];
+  const a = P[j0*N+i0], b2 = P[j0*N+i1], c = P[j1*N+i0], d2 = P[j1*N+i1];
+  const e = (a*(1-tx)+b2*tx)*(1-ty) + (c*(1-tx)+d2*tx)*ty;
+  return (e-0.42) * PATCH_RELIEF[PATCH_ORDER[bi]];   // shape from real elevation, game-scaled
+}
+
 function heightAt(x,z){
   const binfo = biomeAt(x,z);
   const b=binfo.biome;
@@ -194,8 +215,22 @@ function heightAt(x,z){
   const influence = Math.max(0, 1 - d/700);
   const base = b.h * Math.pow(influence, 1.2);
 
+  // REAL MOLA shape blended across neighboring biome windows
+  let mola = 0, mw = 0;
+  for(let bi2=0; bi2<BIOMES.length; bi2++){
+    const bb=BIOMES[bi2];
+    const dd=Math.hypot(x-bb.pos.x, z-bb.pos.z);
+    if(dd > MOLA_R*Math.SQRT2) continue;
+    const w = Math.max(0, 1 - dd/(MOLA_R*1.25));
+    if(w<=0) continue;
+    const ph = patchHeightAt(bi2, x, z);
+    if(ph===null) continue;
+    mola += ph*w; mw += w;
+  }
+  const molaH = mw>0 ? mola/mw : 0;
+
   // detail noise
-  const n1 = fbm(x*0.004, z*0.004, 5);
+  const n1 = fbm(x*0.004, z*0.004, 5)*(mw>0?0.35:1.0);
   const n2 = fbm(x*0.018+100, z*0.018, 3);
   const crater = Math.pow(Math.max(0, 1 - Math.hypot((x%180)-90, (z%180)-90)/38) , 2.2) * -10 * (hash2(Math.floor(x/180), Math.floor(z/180))>0.72?1:0);
 
@@ -210,7 +245,7 @@ function heightAt(x,z){
     special += Math.max(0, 90 - od*0.28) * 1.2;
   }
 
-  return base + n1*18 + n2*4 + crater + special;
+  return base + molaH + n1*18 + n2*4 + crater + special;
 }
 
 // ---------- Terrain mesh (chunked grid 160x160) ----------
@@ -249,7 +284,38 @@ for(let i=0;i<posAttr.count;i++){
 }
 terrainGeo.setAttribute('color', new THREE.BufferAttribute(colors,3));
 
-const terrainMat = new THREE.MeshStandardMaterial({ vertexColors:true, roughness:0.92, metalness:0.02 });
+const albedoTex = (()=>{
+  const c=document.createElement('canvas'); c.width=c.height=256;
+  const g=c.getContext('2d');
+  g.fillStyle='#ffffff'; g.fillRect(0,0,256,256);
+  // sand grains
+  const img=g.getImageData(0,0,256,256); const dd=img.data;
+  for(let i=0;i<dd.length;i+=4){
+    const n = 215 + Math.random()*40;
+    dd[i]=n; dd[i+1]=n*0.98; dd[i+2]=n*0.94;
+  }
+  g.putImageData(img,0,0);
+  // wind ripples
+  g.globalAlpha=0.10; g.strokeStyle='#7a3d1a';
+  for(let i=0;i<26;i++){
+    g.beginPath();
+    const y0=Math.random()*256;
+    g.moveTo(0,y0);
+    for(let x=0;x<=256;x+=16) g.lineTo(x, y0 + Math.sin(x*0.05+i)*5);
+    g.stroke();
+  }
+  // pebble speckles
+  g.globalAlpha=0.16;
+  for(let i=0;i<130;i++){
+    g.fillStyle='#5a2d14';
+    g.fillRect(Math.random()*256, Math.random()*256, 1+Math.random()*2, 1+Math.random()*2);
+  }
+  const t=new THREE.CanvasTexture(c);
+  t.wrapS=t.wrapT=THREE.RepeatWrapping; t.repeat.set(90,90);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+})();
+const terrainMat = new THREE.MeshStandardMaterial({ vertexColors:true, map:albedoTex, roughness:0.92, metalness:0.02 });
 const terrain = new THREE.Mesh(terrainGeo, terrainMat);
 terrain.receiveShadow=true;
 scene.add(terrain);
@@ -316,61 +382,128 @@ let playerPos=new THREE.Vector3(0, heightAt(0,0)+1.2, 0);
 player.position.copy(playerPos);
 let playerYaw=0, playerPitch=0;
 
+let vRefs = { wheels:[], dish:null, mast:null, tail:null, head:null, scarves:[] };
 function buildVehicle(type){
   while(player.children.length) player.remove(player.children[0]);
+  vRefs = { wheels:[], dish:null, mast:null, tail:null, head:null, scarves:[] };
   const g=new THREE.Group();
+  const wheelMat=new THREE.MeshStandardMaterial({color:0x1a1a1a, roughness:0.9});
+  const frameMat=new THREE.MeshStandardMaterial({color:0xffcc33, metalness:0.5, roughness:0.35});
+  const chrome=new THREE.MeshStandardMaterial({color:0xbfc7d0, metalness:0.85, roughness:0.25});
   // shadow disc
   const shadow=new THREE.Mesh(new THREE.CircleGeometry(2.2,18), new THREE.MeshBasicMaterial({color:0x000000, transparent:true, opacity:0.22}));
   shadow.rotation.x=-Math.PI/2; shadow.position.y=0.02; g.add(shadow);
-  // body
   let body;
   if(type==='bike'){
     body=new THREE.Group();
-    const frame=new THREE.Mesh(new THREE.BoxGeometry(2.0,0.22,0.28), new THREE.MeshStandardMaterial({color:0xffcc33}));
-    frame.position.set(0,0.9,0); body.add(frame);
-    const wheelG=new THREE.TorusGeometry(0.55,0.08,8,18);
-    const wMat=new THREE.MeshStandardMaterial({color:0x1a1a1a});
-    const w1=new THREE.Mesh(wheelG,wMat); w1.position.set(-0.9,0.55,0); w1.rotation.y=Math.PI/2; body.add(w1);
-    const w2=w1.clone(); w2.position.set(0.95,0.55,0); body.add(w2);
-    const basket=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.35,0.4), new THREE.MeshStandardMaterial({color:0xd9a86c})); basket.position.set(1.15,1.0,0); body.add(basket);
-    const fish=new THREE.Mesh(new THREE.SphereGeometry(0.18,8,8), new THREE.MeshStandardMaterial({color:0x4fc3f7, emissive:0x0288d1, emissiveIntensity:0.3})); fish.position.set(1.15,1.22,0); body.add(fish);
+    // diamond frame
+    const mk=(x1,y1,x2,y2,th)=>{ const L=Math.hypot(x2-x1,y2-y1); const bar=new THREE.Mesh(new THREE.CylinderGeometry(th,th,L,6), frameMat); bar.position.set((x1+x2)/2,(y1+y2)/2,0); bar.rotation.z=Math.atan2(y2-y1,x2-x1)-Math.PI/2; body.add(bar); };
+    mk(-0.9,0.55,0.1,0.62,0.045); mk(0.1,0.62,0.85,0.55,0.045); mk(-0.9,0.55,0.0,1.05,0.045); mk(0.0,1.05,0.1,0.62,0.04); mk(0.0,1.05,0.85,0.55,0.04); mk(0.85,0.55,1.05,1.0,0.04);
+    // wheels with spokes
+    const mkWheel=(x)=>{
+      const w=new THREE.Group();
+      const tire=new THREE.Mesh(new THREE.TorusGeometry(0.55,0.07,8,22), wheelMat); tire.rotation.y=Math.PI/2; w.add(tire);
+      for(let s=0;s<5;s++){ const sp=new THREE.Mesh(new THREE.BoxGeometry(0.02,1.02,0.02), chrome); sp.rotation.z=s*Math.PI/5; w.add(sp); }
+      const hub=new THREE.Mesh(new THREE.CylinderGeometry(0.07,0.07,0.12,8), chrome); hub.rotation.z=Math.PI/2; w.add(hub);
+      w.position.set(x,0.55,0); body.add(w); vRefs.wheels.push(w); return w;
+    };
+    mkWheel(-0.9); mkWheel(0.95);
+    // seat + bars
+    const seat=new THREE.Mesh(new THREE.BoxGeometry(0.3,0.08,0.16), wheelMat); seat.position.set(-0.05,1.12,0); body.add(seat);
+    const bar=new THREE.Mesh(new THREE.BoxGeometry(0.3,0.04,0.5), frameMat); bar.position.set(1.05,1.06,0); body.add(bar);
+    // giỏ mây + cá
+    const basket=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.35,0.4), new THREE.MeshStandardMaterial({color:0xd9a86c, roughness:0.85})); basket.position.set(1.2,0.86,0); body.add(basket);
+    const fish=new THREE.Mesh(new THREE.SphereGeometry(0.18,8,8), new THREE.MeshStandardMaterial({color:0x4fc3f7, emissive:0x0288d1, emissiveIntensity:0.35})); fish.scale.x=1.4; fish.position.set(1.2,1.1,0); body.add(fish);
+    const fin=new THREE.Mesh(new THREE.ConeGeometry(0.09,0.16,5), new THREE.MeshStandardMaterial({color:0x29b6f6})); fin.rotation.z=Math.PI/2; fin.position.set(0.97,1.1,0); body.add(fin);
+    // bàn đạp
+    const pedal=new THREE.Group();
+    const arm=new THREE.Mesh(new THREE.BoxGeometry(0.3,0.03,0.03), chrome); arm.position.x=0.15; pedal.add(arm);
+    const cpx=new THREE.Mesh(new THREE.BoxGeometry(0.12,0.025,0.06), wheelMat); cpx.position.x=0.28; pedal.add(cpx);
+    pedal.position.set(0.1,0.62,0.16); body.add(pedal); vRefs.pedal=pedal;
     g.add(body);
   } else if(type==='moto'){
     body=new THREE.Group();
-    const b=new THREE.Mesh(new THREE.BoxGeometry(2.3,0.5,0.7), new THREE.MeshStandardMaterial({color:0xff3b2f}));
-    b.position.set(0,0.85,0); body.add(b);
-    const seat=new THREE.Mesh(new THREE.BoxGeometry(1.1,0.22,0.55), new THREE.MeshStandardMaterial({color:0x1a1a1a})); seat.position.set(-0.2,1.12,0); body.add(seat);
-    const wG=new THREE.TorusGeometry(0.42,0.12,8,16); const wM=new THREE.MeshStandardMaterial({color:0x111111});
-    const w1=new THREE.Mesh(wG,wM); w1.position.set(-1.05,0.45,0); w1.rotation.y=Math.PI/2; body.add(w1);
-    const w2=w1.clone(); w2.position.set(1.05,0.45,0); body.add(w2);
+    const tank=new THREE.Mesh(new THREE.CapsuleGeometry(0.26,0.7,6,12), new THREE.MeshStandardMaterial({color:0xff3b2f, metalness:0.4, roughness:0.3}));
+    tank.rotation.z=Math.PI/2; tank.position.set(0.15,0.95,0); body.add(tank);
+    const seat=new THREE.Mesh(new THREE.BoxGeometry(1.0,0.16,0.42), new THREE.MeshStandardMaterial({color:0x1a1a1a, roughness:0.8})); seat.position.set(-0.35,1.12,0); body.add(seat);
+    const fork=new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,0.85,8), chrome); fork.position.set(0.85,0.72,0); fork.rotation.z=-0.35; body.add(fork);
+    const hbar=new THREE.Mesh(new THREE.BoxGeometry(0.05,0.05,0.5), chrome); hbar.position.set(1.05,1.12,0); body.add(hbar);
+    const mkW=(x)=>{ const w=new THREE.Group(); const tire=new THREE.Mesh(new THREE.TorusGeometry(0.42,0.115,8,18), wheelMat); tire.rotation.y=Math.PI/2; w.add(tire);
+      for(let s=0;s<4;s++){ const sp=new THREE.Mesh(new THREE.BoxGeometry(0.025,0.78,0.025), chrome); sp.rotation.z=s*Math.PI/4+0.4; w.add(sp);} w.position.set(x,0.45,0); body.add(w); vRefs.wheels.push(w); return w; };
+    mkW(-1.05); mkW(1.05);
+    const pipe=new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.07,0.9,8), chrome); pipe.rotation.z=Math.PI/2-0.08; pipe.position.set(-0.55,0.55,0.3); body.add(pipe);
+    const lamp=new THREE.Mesh(new THREE.SphereGeometry(0.13,10,8), new THREE.MeshStandardMaterial({color:0xfff6a0, emissive:0xfff176, emissiveIntensity:0.9})); lamp.position.set(1.12,0.98,0); body.add(lamp);
+    // chắn bùn sau (bốc đầu chất chơi)
+    const fender=new THREE.Mesh(new THREE.TorusGeometry(0.5,0.05,6,12,Math.PI*0.9), new THREE.MeshStandardMaterial({color:0xff3b2f})); fender.position.set(-1.05,0.45,0); fender.rotation.y=Math.PI/2; fender.rotation.x=0.4; body.add(fender);
     g.add(body);
   } else {
     body=new THREE.Group();
-    const b=new THREE.Mesh(new THREE.BoxGeometry(2.6,0.75,1.45), new THREE.MeshStandardMaterial({color:0xe8ddd0}));
-    b.position.set(0,0.95,0); body.add(b);
-    const cabin=new THREE.Mesh(new THREE.BoxGeometry(1.1,0.6,1.15), new THREE.MeshStandardMaterial({color:0x7ec8e3, transparent:true, opacity:0.72, roughness:0.2}));
-    cabin.position.set(0.15,1.48,0); body.add(cabin);
-    const ant=new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.04,1.0,8), new THREE.MeshStandardMaterial({color:0x111111})); ant.position.set(-1.1,1.6,0.55); body.add(ant);
-    const light=new THREE.Mesh(new THREE.SphereGeometry(0.18,8,8), new THREE.MeshStandardMaterial({color:0xfff6a0, emissive:0xfff176, emissiveIntensity:0.9})); light.position.set(1.35,0.95,0.35); body.add(light);
-    const light2=light.clone(); light2.position.set(1.35,0.95,-0.35); body.add(light2);
-    const wG=new THREE.CylinderGeometry(0.38,0.38,0.32,14); wG.rotateZ(Math.PI/2); const wM=new THREE.MeshStandardMaterial({color:0x1e1e1e});
-    for(const [x,z] of [[-0.9,0.78],[0.9,0.78],[-0.9,-0.78],[0.9,-0.78]]){ const w=new THREE.Mesh(wG,wM); w.position.set(x,0.42,z); body.add(w); }
+    const chassis=new THREE.Mesh(new THREE.BoxGeometry(2.2,0.42,1.15), new THREE.MeshStandardMaterial({color:0xd9cfc0, metalness:0.3, roughness:0.5}));
+    chassis.position.set(0,1.02,0); body.add(chassis);
+    // золотая foil belly
+    const foil=new THREE.Mesh(new THREE.BoxGeometry(2.0,0.1,1.0), new THREE.MeshStandardMaterial({color:0xffd54f, metalness:0.9, roughness:0.3})); foil.position.set(0,0.78,0); body.add(foil);
+    const cabin=new THREE.Mesh(new THREE.BoxGeometry(1.0,0.55,1.05), new THREE.MeshStandardMaterial({color:0x7ec8e3, transparent:true, opacity:0.55, roughness:0.08, metalness:0.1}));
+    cabin.position.set(0.05,1.52,0); body.add(cabin);
+    const deck=new THREE.Mesh(new THREE.BoxGeometry(0.9,0.07,1.0), new THREE.MeshStandardMaterial({color:0x12324a, metalness:0.6, roughness:0.35})); deck.position.set(-0.85,1.3,0); body.add(deck); // panel pin
+    // mast camera
+    const mast=new THREE.Group();
+    const pole=new THREE.Mesh(new THREE.CylinderGeometry(0.035,0.035,0.8,6), chrome); pole.position.y=0.4; mast.add(pole);
+    const eyeBox=new THREE.Mesh(new THREE.BoxGeometry(0.34,0.16,0.14), new THREE.MeshStandardMaterial({color:0x222222})); eyeBox.position.y=0.82; mast.add(eyeBox);
+    for(const dz of [-0.05,0.05]){ const eye=new THREE.Mesh(new THREE.SphereGeometry(0.045,8,6), new THREE.MeshStandardMaterial({color:0x80deea, emissive:0x00bcd4, emissiveIntensity:0.8})); eye.position.set(0.18,0.82,dz); mast.add(eye); }
+    mast.position.set(0.55,1.28,-0.42); body.add(mast); vRefs.mast=mast;
+    // ăng-ten dish
+    const dishG=new THREE.Group();
+    const stick=new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,0.5,5), chrome); stick.position.y=0.25; dishG.add(stick);
+    const dish=new THREE.Mesh(new THREE.SphereGeometry(0.16,10,6,0,Math.PI*2,0,Math.PI*0.45), new THREE.MeshStandardMaterial({color:0xf5f5f5, side:THREE.DoubleSide})); dish.position.y=0.52; dish.rotation.x=2.4; dishG.add(dish);
+    dishG.position.set(-0.9,1.26,0.45); body.add(dishG); vRefs.dish=dishG;
+    // đèn pha
+    for(const dz of [0.35,-0.35]){ const l=new THREE.Mesh(new THREE.SphereGeometry(0.14,8,8), new THREE.MeshStandardMaterial({color:0xfff6a0, emissive:0xfff176, emissiveIntensity:0.95})); l.position.set(1.18,1.0,dz); body.add(l); }
+    // rocker-bogie 6 bánh
+    const mkW=(x,z,armX)=>{
+      const leg=new THREE.Group();
+      const arm=new THREE.Mesh(new THREE.BoxGeometry(0.55,0.07,0.07), chrome); arm.position.set(armX/2,0,0); leg.add(arm);
+      const w=new THREE.Group();
+      const tire=new THREE.Mesh(new THREE.CylinderGeometry(0.34,0.34,0.26,14), wheelMat); tire.rotation.z=Math.PI/2; w.add(tire);
+      for(let s=0;s<6;s++){ const cleat=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.1,0.28), chrome); const a=s*Math.PI/3; cleat.position.set(0, Math.cos(a)*0.34, Math.sin(a)*0.34); cleat.rotation.x=-a; w.add(cleat); }
+      w.position.set(armX,0,0); leg.add(w); vRefs.wheels.push(w);
+      leg.position.set(x,0.72,z); body.add(leg); return leg;
+    };
+    mkW(1.05,0.68,0.5); mkW(1.05,-0.68,-0.5);
+    mkW(0.0,0.72,0.42); mkW(0.0,-0.72,-0.42);
+    mkW(-1.0,0.66,0.46); mkW(-1.0,-0.66,-0.46);
     g.add(body);
   }
-  // cat
+  // ===== Mèo Vàng =====
   const cat=new THREE.Group();
-  const catBody=new THREE.Mesh(new THREE.CapsuleGeometry(0.28,0.45,4,10), new THREE.MeshStandardMaterial({color:0xffcc33}));
+  const fur=new THREE.MeshStandardMaterial({color:0xffcc33});
+  const furDark=new THREE.MeshStandardMaterial({color:0xffb300});
+  const catBody=new THREE.Mesh(new THREE.CapsuleGeometry(0.28,0.45,4,10), fur);
   catBody.rotation.z=Math.PI/2; catBody.position.set(0,1.55,0); cat.add(catBody);
-  const head=new THREE.Mesh(new THREE.SphereGeometry(0.32,12,10), new THREE.MeshStandardMaterial({color:0xffd54f})); head.position.set(0.38,1.82,0); cat.add(head);
+  const head=new THREE.Mesh(new THREE.SphereGeometry(0.32,12,10), new THREE.MeshStandardMaterial({color:0xffd54f})); head.position.set(0.38,1.82,0); cat.add(head); vRefs.head=head;
+  // sọc
+  for(const sx of [0.1,0.25]){ const stripe=new THREE.Mesh(new THREE.SphereGeometry(0.28,10,8,0,Math.PI*2,0.9,0.5), furDark); stripe.rotation.z=Math.PI/2; stripe.position.set(sx,1.62,0); cat.add(stripe); }
   const earG=new THREE.ConeGeometry(0.12,0.22,8);
-  const ear1=new THREE.Mesh(earG, new THREE.MeshStandardMaterial({color:0xffb300})); ear1.position.set(0.42,2.05,0.14); cat.add(ear1);
+  const ear1=new THREE.Mesh(earG, furDark); ear1.position.set(0.42,2.05,0.14); cat.add(ear1);
   const ear2=ear1.clone(); ear2.position.set(0.42,2.05,-0.14); cat.add(ear2);
-  const helmet=new THREE.Mesh(new THREE.SphereGeometry(0.42,14,10), new THREE.MeshStandardMaterial({color:0xffffff, transparent:true, opacity:0.22, roughness:0.05})); helmet.position.set(0.38,1.84,0); cat.add(helmet);
+  const helmet=new THREE.Mesh(new THREE.SphereGeometry(0.42,14,10), new THREE.MeshStandardMaterial({color:0xffffff, transparent:true, opacity:0.2, roughness:0.05, metalness:0.1})); helmet.position.set(0.38,1.84,0); cat.add(helmet);
+  const ring=new THREE.Mesh(new THREE.TorusGeometry(0.4,0.035,6,16), new THREE.MeshStandardMaterial({color:0xf5f5f5, metalness:0.6, roughness:0.3})); ring.position.set(0.38,1.62,0); ring.rotation.y=Math.PI/2; cat.add(ring);
   const scarf=new THREE.Mesh(new THREE.BoxGeometry(0.12,0.08,0.52), new THREE.MeshStandardMaterial({color:0xff3b2f})); scarf.position.set(0.12,1.58,0); cat.add(scarf);
+  // ĐUÔI động
+  const tail=new THREE.Group();
+  const t1=new THREE.Mesh(new THREE.CapsuleGeometry(0.06,0.3,4,8), fur); t1.position.set(-0.15,0,0); t1.rotation.z=0.9; tail.add(t1);
+  const t2=new THREE.Mesh(new THREE.CapsuleGeometry(0.05,0.25,4,8), furDark); t2.position.set(-0.4,0.16,0); t2.rotation.z=1.5; tail.add(t2);
+  tail.position.set(-0.35,1.5,0); cat.add(tail); vRefs.tail=tail;
+  // chân đạp (bike)
+  if(type==='bike'){
+    for(const dz of [0.14,-0.14]){
+      const leg=new THREE.Mesh(new THREE.CapsuleGeometry(0.05,0.22,4,8), fur); leg.position.set(0.02,1.28,dz); cat.add(leg);
+    }
+  }
   g.add(cat);
   cat.name='cat';
   player.add(g);
 }
+
 buildVehicle(vehicleType);
 
 // wheel spin helper: find wheels by traversal and spin
@@ -800,6 +933,45 @@ addEventListener('keydown', e=>{
 document.getElementById('minimap-wrap').onclick=()=> toggleMap();
 addEventListener('keydown', e=>{ if(e.key.toLowerCase()==='m' && !e.repeat) toggleMap(); });
 
+// ---------- Phase 4: dynamic global dust storm ----------
+let stormLevel = 0;         // 0 calm .. 1 global dust
+let stormTarget = 0;
+let nextStormAt = performance.now() + 50000 + Math.random()*70000;
+let stormEndsAt = 0;
+const stormBanner = document.createElement('div');
+stormBanner.id = 'storm-banner';
+stormBanner.style.cssText='position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:6;display:none;gap:8px;align-items:center;background:rgba(120,40,10,0.75);border:1px solid rgba(255,154,92,0.5);padding:8px 14px;border-radius:999px;font-size:12px;font-weight:800;letter-spacing:0.04em;color:#ffe3c8;backdrop-filter:blur(10px);pointer-events:none';
+stormBanner.textContent='🌪️ Bão bụi toàn cầu đang quét qua — bầu trời đỏ rực!';
+document.body.appendChild(stormBanner);
+function maybeStorm(now){
+  if(stormTarget>0 && now > stormEndsAt){ stormTarget=0; stormBanner.style.display='none'; if(audioEnabled) showToast('🌤️','Bão đã tan','Trời quang trở lại, sao bắt đầu lấp lánh.'); }
+  else if(now > nextStormAt && stormTarget===0){
+    stormTarget = 0.55 + Math.random()*0.45;
+    stormEndsAt = now + 22000 + Math.random()*26000;
+    nextStormAt = now + 90000 + Math.random()*120000;
+    stormBanner.style.display='flex';
+    if(audioEnabled) showToast('🌪️','Bão bụi toàn cầu!','Bụi mịn khuếch tán ánh sáng — chân trời nhòa đỏ, tầm nhìn giảm. Kiểu bão từng “tắt điện” Opportunity (2018).');
+  }
+  stormLevel += (stormTarget - stormLevel) * 0.012; // glide 8s
+  const s = stormLevel;
+  scene.fog.density = 0.0012 + s*0.0075;
+  sun.intensity = THREE.MathUtils.lerp(1.6, 0.5, s) * SUN_BASE_I;
+  sun.color.setHSL(0.07, 0.35+s*0.5, THREE.MathUtils.lerp(0.72, 0.5, s));
+  skyMat.uniforms.top.value.setHSL(0.06, 0.3+s*0.5, THREE.MathUtils.lerp(0.05, 0.18, s));
+  skyMat.uniforms.horizon.value.setHSL(0.05, 0.5+s*0.45, THREE.MathUtils.lerp(0.55, 0.42, s));
+  ambient.intensity = THREE.MathUtils.lerp(0.85, 0.5, s) * AMB_BASE_I;
+  stormLevelHud(s);
+}
+let _lastStorm=0;
+function stormLevelHud(s){
+  const lvl = s>0.66?'TOÀN CẦU':s>0.33?'TRUNG BÌNH':s>0.08?'NHẸ':'yên';
+  if(lvl!==_lastStorm){
+    _lastStorm=lvl;
+    const pill=document.getElementById('hud-storm');
+    if(pill){ pill.style.display = s>0.08?'flex':'none'; pill.querySelector('b').textContent=lvl; }
+  }
+}
+
 // ---------- Main loop ----------
 let lastT=performance.now();
 let speedKmh=0;
@@ -1185,10 +1357,14 @@ function frame(now){
   }
   player.position.copy(playerPos);
   player.rotation.y = playerYaw;
-  // wheel spin visual: rotate wheels
-  player.traverse(o=>{
-    if(o.isMesh && o.geometry && o.geometry.type==='TorusGeometry'){ o.rotation.x += wheelSpin*0.02; wheelSpin*=0.92; }
-  });
+  // wheel spin + life animation (refs, không traverse)
+  for(const w of vRefs.wheels){ w.rotation.x += wheelSpin*0.06; }
+  wheelSpin *= 0.90;
+  if(vRefs.pedal) vRefs.pedal.rotation.x += wheelSpin*0.05;
+  if(vRefs.tail) vRefs.tail.rotation.y = Math.sin(now*0.0035 + speedKmh*0.04)*(0.25 + Math.min(0.5, speedKmh*0.012));
+  if(vRefs.dish) vRefs.dish.rotation.y = Math.sin(now*0.0012)*0.9;
+  if(vRefs.mast) vRefs.mast.rotation.y = Math.sin(now*0.0008+1.3)*0.7;
+  if(vRefs.head) vRefs.head.rotation.z = Math.sin(now*0.004)*0.05 * (1 + Math.min(1, speedKmh*0.02));
 
   // paws
   for(const p of pawItems){
@@ -1225,7 +1401,7 @@ function frame(now){
   drawMini();
   // dust
   const isStorm = bi.id==='storm';
-  dustMat.opacity = THREE.MathUtils.clamp( (isStorm?0.42:0.0) + Math.min(0.35, speedKmh/70), 0, 0.55);
+  dustMat.opacity = THREE.MathUtils.clamp( (isStorm?0.42:0.0) + Math.min(0.35, speedKmh/70) + stormLevel*0.5, 0, 0.95);
   const dpos=dustGeo.attributes.position;
   for(let i=0;i<dustCount;i++){
     let x=dpos.getX(i), y=dpos.getY(i), z=dpos.getZ(i);
@@ -1252,6 +1428,7 @@ function frame(now){
   } else {
     if(poiCooldown>0) poiCooldown -= dt;
   }
+  maybeStorm(now);
   // Phase 3: audio + stars + journal
   if(audioEnabled) tickAudio(dt, speedKmh, bi.id);
   maybeShootingStar(now);
@@ -1287,13 +1464,14 @@ const _origStartJourney = startJourney;
 startJourney = function(){ _origStartJourney(); if(audioEnabled) { ensureAudio(); if(audioCtx && audioCtx.state==='suspended') audioCtx.resume(); } renderJournalCards(); };
 document.getElementById('btn-start').onclick=()=>startJourney();
 
+// (network load đã xong ở boot.js — chỉ còn dựng scene, diễn ra tức thì)
 let loadP=0;
 const loadIv=setInterval(()=>{
-  loadP=Math.min(100, loadP+ (Math.random()*18+6));
+  loadP=Math.min(100, loadP+ (Math.random()*30+34));
   loadBar.style.width=loadP+'%'; loadPct.textContent=Math.round(loadP)+'%';
   if(loadP>=100){ clearInterval(loadIv); hideLoading(); applyTime(); setVehicle(vehicleType); updateHint(); updateJournalPhase3(); drawMini(); drawBigMap(); renderJournalCards(); requestAnimationFrame(frame); }
-}, 120);
+}, 55);
 loadText.textContent='Đang dựng đồng bằng Arcadia và đánh thức Mèo Vàng...';
 
 // expose for debug
-window.__yc={ scene, player, BIOMES, POIS, heightAt, discovered, setPlayerPos(x,z){ playerPos.set(x, heightAt(x,z)+1.18, z); player.position.copy(playerPos); }, galleryList, refreshGalleryCache, openDiscovery, saveState(){ save(); return { distance, collected, discovered:[...discovered], playTimeSec }; } };
+window.__yc={ scene, player, BIOMES, POIS, heightAt, discovered, setPlayerPos(x,z){ playerPos.set(x, heightAt(x,z)+1.18, z); player.position.copy(playerPos); }, forceStorm(){ stormTarget=0.9; stormEndsAt=performance.now()+30000; stormBanner.style.display='flex'; }, galleryList, refreshGalleryCache, openDiscovery, saveState(){ save(); return { distance, collected, discovered:[...discovered], playTimeSec }; } };

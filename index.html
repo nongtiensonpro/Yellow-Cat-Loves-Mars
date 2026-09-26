@@ -8,6 +8,12 @@
 <meta name="theme-color" content="#c1440e"/>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🪐</text></svg>"/>
 <link rel="manifest" href="./manifest.json"/>
+<meta property="og:type" content="website"/>
+<meta property="og:title" content="Yellow Cat Loves Mars — Mèo Vàng trên Sao Hỏa 🪐🐱"/>
+<meta property="og:description" content="Website tĩnh WebGL: tự do đạp xe/xe máy/rover trên địa hình Sao Hỏa dựng từ dữ liệu MOLA thật. Nhạc adaptive, 12 thẻ khám phá, photo mode, PWA offline."/>
+<meta property="og:image" content="./og-image.png"/>
+<meta name="twitter:card" content="summary_large_image"/>
+<meta name="twitter:image" content="./og-image.png"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
 <link rel="stylesheet" href="./styles/main.css"/>
@@ -42,6 +48,7 @@
       <div class="pill"><span class="dot"></span> <span><b id="hud-biome">Arcadia Planitia</b> · <span id="hud-coord">0, 0</span></span></div>
       <div class="pill">🐾 <b id="hud-paws">0</b> <span style="color:var(--muted)">Dấu chân</span> &nbsp;·&nbsp; <span id="hud-speed">0</span> km/h</div>
       <div class="pill" id="hud-vehicle-pill">🚙 <span id="hud-vehicle-name">Rover</span></div>
+      <div class="pill" id="hud-storm" style="display:none;background:rgba(120,40,10,0.7);border-color:rgba(255,154,92,0.45)">🌪️ Bão bụi: <b>&nbsp;</b></div>
     </div>
     <div class="minimap-wrap" id="minimap-wrap" title="Bản đồ quỹ đạo — click để thu phóng">
       <canvas id="minimap" width="168" height="168"></canvas>
@@ -269,6 +276,6 @@
 <div class="lightbox" id="lightbox"><img id="lightbox-img" alt="Ảnh Sao Hỏa"/><button class="ctrl-btn" id="btn-lightbox-close" style="position:absolute;top:14px;right:14px">✕</button></div>
 <div class="shooting-star" id="shooting-star"></div>
 
-<script type="module" src="./app/main.js"></script>
+<script type="module" src="./app/boot.js"></script>
 </body>
 </html>

@@ -1,10 +1,13 @@
 // Yellow Cat Loves Mars — offline SW (cache-first, static only)
-const CACHE = 'yc-mars-v3';
+const CACHE = 'yc-mars-v4';
 const ASSETS = [
   './',
   './index.html',
   './styles/main.css',
   './app/main.js',
+  './app/boot.js',
+  './app/mola-patches.js',
+  './assets/textures/biome-patches.png',
   './manifest.json'
 ];
 

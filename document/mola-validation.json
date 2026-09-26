@@ -1,0 +1,57 @@
+{
+  "source": "NASA/JPL/GSFC PIA02031 via Wikimedia Commons (public domain). Hue-ramp calibrated 2026-09-25 to published MOLA elevations of Hellas/Isidis/Argyre/Syrtis/Elysium/Tharsis.",
+  "content_bbox": {
+    "x0": 148,
+    "x1": 2093,
+    "y0": 63,
+    "y1": 1133
+  },
+  "projection": "Mercator +-70deg; lon 0E centered; verified: Hellas(-45,70E)=pure blue, Tharsis(0,247E)=red band",
+  "patches": {
+    "arcadia": {
+      "idx": 0,
+      "lon0": 178.0,
+      "lat0": 46.0,
+      "half": 7.0,
+      "relief": 55,
+      "minE": -5336,
+      "maxE": 0
+    },
+    "valles": {
+      "idx": 1,
+      "lon0": 297.0,
+      "lat0": -8.0,
+      "half": 8.0,
+      "relief": 95,
+      "minE": -7500,
+      "maxE": 9000
+    },
+    "olympus": {
+      "idx": 2,
+      "lon0": 226.2,
+      "lat0": 18.6,
+      "half": 4.0,
+      "relief": 150,
+      "minE": -7500,
+      "maxE": 9000
+    },
+    "polar": {
+      "idx": 3,
+      "lon0": 160.0,
+      "lat0": -66.0,
+      "half": 5.0,
+      "relief": 60,
+      "minE": -1150,
+      "maxE": 8149
+    },
+    "storm": {
+      "idx": 4,
+      "lon0": 70.0,
+      "lat0": 10.0,
+      "half": 6.0,
+      "relief": 50,
+      "minE": -2499,
+      "maxE": 4784
+    }
+  }
+}

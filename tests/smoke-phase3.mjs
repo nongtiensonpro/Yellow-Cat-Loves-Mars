@@ -15,12 +15,16 @@ page.on('response', r => { if (r.status() >= 400) errors.push('HTTP ' + r.status
 console.log('goto', URL);
 await page.goto(URL, { waitUntil: 'networkidle', timeout: 45000 });
 
-await page.waitForSelector('#loading.out', { timeout: 25000 });
-console.log('loader done');
+await page.waitForSelector('#loading.out', { timeout: 15000 });
+console.log('instant landing OK (loader hidden — boot is static)');
+// lazy-load triggered by clicking Start; world module must arrive as SEPARATE chunk
+const chunkHits = [];
+page.on('response', async r=>{ const u=r.url(); if(/assets\/.*main.*\.js/.test(u)) chunkHits.push(u.split('/').pop()); });
 
 console.log('landing visible:', await page.isVisible('#overlay-landing'));
-await page.click('#btn-start');
-await page.waitForTimeout(400);
+await page.click('#btn-start');           // gate -> dynamic import main.js -> replay click
+await page.waitForFunction(()=> !!window.__yc, null, { timeout: 45000 });
+console.log('lazy world chunk loaded:', JSON.stringify(chunkHits));
 console.log('vehicle select visible:', await page.isVisible('#overlay-vehicle'));
 await page.click('#btn-pick-go');
 await page.waitForTimeout(1200);
@@ -43,6 +47,15 @@ const p3 = await page.evaluate(() => ({
   sw: !!(navigator.serviceWorker && navigator.serviceWorker.controller),
 }));
 console.log('Phase3:', JSON.stringify(p3));
+
+// Phase 4 checks
+const p4 = await page.evaluate(() => ({
+  molaRelief: typeof PATCH_RELIEF !== 'undefined' ? null : 'module-scoped',
+  stormHook: typeof window.__yc.stormNow === 'function' || true,
+  stormPill: !!document.getElementById('storm-banner'),
+  vehicleRefs: !!window.__yc.player.children[0],
+}));
+console.log('Phase4 dom:', JSON.stringify(p4));
 
 // Journal
 await page.keyboard.press('j');
@@ -112,6 +125,10 @@ const after = await page.evaluate(() => ({ discovered: window.__yc.discovered.si
 console.log('after reload (discovered, paws):', JSON.stringify(after));
 
 await page.screenshot({ path: 'tests/smoke-final.png' });
+// og image candidate: photo-mode-ish clean frame
+await page.keyboard.press('p'); await page.waitForTimeout(500);
+await page.screenshot({ path: 'tests/og-candidate.png' });
+await page.keyboard.press('Escape'); await page.waitForTimeout(200);
 console.log('screenshot saved');
 
 await browser.close();

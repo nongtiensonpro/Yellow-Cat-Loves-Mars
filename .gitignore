@@ -4,3 +4,6 @@ tests/*.png
 *.log
 .DS_Store
 verify-out/
+
+assets/textures/_src_*.jpg
+preview-*.log

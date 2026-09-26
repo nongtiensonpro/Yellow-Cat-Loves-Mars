@@ -1,15 +1,15 @@
 # Yellow Cat Loves Mars 🪐🐱
 
-Website tĩnh khám phá Sao Hỏa — Mèo Vàng đạp xe đạp / xe máy / rover trên địa hình procedural lấy cảm hứng NASA MOLA/HiRISE. Không backend, không database.
+Website tĩnh khám phá Sao Hỏa — Mèo Vàng đạp xe đạp / xe máy / rover trên địa hình dựng từ **dữ liệu độ cao MOLA thật của NASA** (PIA02031, public domain), procedural generation, nhạc adaptive, thẻ khám phá, photo mode, PWA offline. Không backend, không database.
 
-## v0.2 — Giai đoạn 3 (Cảm xúc & Chia sẻ)
+## v0.4 — Giai đoạn 4 (Đánh bóng & Ra mắt)
 
-- 🎵 **Nhạc nền adaptive** — tổng hợp bằng Web Audio (pad + arp + gió), đổi hợp âm theo vùng, nhịp theo tốc độ. Nút 🔈, volume trong Nhật ký.
-- 📖 **12 Discovery Cards** — POI thực tế (Olympus caldera, Candor Chasma, ống dung nham, lốc bụi…) với fact NASA + lời Mèo + so sánh Trái Đất. Tự mở khi lại gần, lưu tiến trình.
-- 🖼️ **Gallery** — ảnh Photo Mode lưu IndexedDB (kèm tọa độ + vùng), xem/xóa/chia sẻ (Web Share + clipboard), LRU 30 ảnh.
-- 📖 **Nhật Ký Mèo Vàng** — km, dấu chân, vùng, thẻ, ảnh, thời gian chơi + chia sẻ hành trình.
-- ☄️ **Sao băng** ngẫu nhiên kèm âm “vút”, 🌪️ bụi xoáy theo vùng.
-- 📴 **PWA offline** — manifest + Service Worker cache-first, trạng thái SW/Offline trong Nhật ký.
+- 🗺️ **Địa hình MOLA THẬT**: độ cao 5 vùng tải từ bản topo NASA PIA02031, hiệu chỉnh hue→mét theo số liệu công bố (Hellas −7.2km, Olympus +22km…), kiểm chứng hold-out + blend đa vùng. (`app/mola-patches.js`, repro bằng `scripts/build-mola-height.py`)
+- 🏜️ **Texture bề mặt**: cát hạt + gợn gió + đá vụn (canvas procedural, nhân vertex color).
+- 🐱 **Mèo & xe nâng cấp**: mâm nan hoa, khung kim cương, bàn đạp quay; moto giảm xóc/ pô/ chắn bùn; rover 6 bánh rocker-bogie + đĩa ăng-ten xoay + mast camera; mèo có đuôi ve vẩy + sọc + vành mũ.
+- 🚀 **Code-split**: landing **tức thì** — entry `boot.js` 1.6KB gzip; Three+world (154KB gzip) chỉ tải khi bấm Bắt đầu/hover/idle.
+- 🌪️ **Bão bụi toàn cầu động**: fog/sun/sky/banner HUD glide 8s, sự kiện ngẫu nhiên 1.5–3.5 phút.
+- 🔗 **SEO/social**: og:title/description + `og-image.png` (screenshot render thật, có caption).
 
 ## Chạy local
 
@@ -17,16 +17,21 @@ Website tĩnh khám phá Sao Hỏa — Mèo Vàng đạp xe đạp / xe máy / r
 npm install
 npm run dev        # http://localhost:5173
 npm run build      # ra dist/ (tĩnh, host đâu cũng chạy)
-npm run preview    # thử bản build
+npm run preview
 ```
 
 Test tự động (Playwright + Edge headless):
+
 ```bash
-npx vite preview --port 5176 &
+node node_modules/vite/bin/vite.js preview --port 5176 &
 node tests/smoke-phase3.mjs   # TARGET=http://127.0.0.1:5176/
 ```
 
 ## Điều khiển
-WASD/Arrows · Shift boost · C camera · M bản đồ · P photo · **J nhật ký** · **G gallery** · L giờ · H help · Esc thoát · Mobile: joystick góc trái.
+WASD/Arrows · Shift boost · C camera · M bản đồ · P photo · J nhật ký · G gallery · L giờ · H help · Esc · Mobile: joystick góc trái.
 
-Deploy tĩnh: upload `dist/` lên GitHub Pages / Cloudflare Pages / Netlify.
+## Dữ liệu & bản quyền
+- Địa hình: NASA/JPL/GSFC **PIA02031** (MOLA, public domain) qua Wikimedia Commons. Hiệu chỉnh & kiểm chứng: `document/mola-validation.json`.
+- Build lại bản đồ độ cao: `python scripts/build-mola-height.py` (cần Pillow).
+
+Deploy tĩnh: upload `dist/` (GitHub Pages / Cloudflare Pages / Netlify…).
