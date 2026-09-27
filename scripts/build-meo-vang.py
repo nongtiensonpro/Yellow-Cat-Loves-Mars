@@ -36,6 +36,11 @@ def mat(name, color, rough=0.62, metal=0.0, emit=None, emit_str=0.0, clearcoat=0
     if emit is not None:
         b.inputs["Emission Color"].default_value = (*emit, 1.0)
         b.inputs["Emission Strength"].default_value = emit_str
+    # diffuse_color là màu hiển thị trong viewport/preview. Không set thì render
+    # Workbench (và mở file .blend) ra XÁM — chỉ dùng màu nút Shader.
+    m.diffuse_color = (*color, 1.0)
+    m.roughness = rough
+    m.metallic = metal
     return m
 
 M_FUR    = mat("fur",      (0.96, 0.64, 0.12), 0.80)            # vàng mèo
@@ -115,15 +120,27 @@ body_parts.append(sphere("belly",    0.205, ( 0.15, 0, 0.14), (1.08, 0.90, 0.78)
 for s in (1, -1):                                   # hông + bắp đùi
     body_parts.append(sphere("hip",   0.185, (-0.30, s*0.12, 0.24), (1.05, 0.80, 1.02), M_FUR))
     body_parts.append(sphere("thigh", 0.115, (-0.20, s*0.155, 0.31), (1.25, 0.80, 1.00), M_FUR))
-# sọc tabby: vòng tròn quanh thân (trục quanh X)
-for i, (lx, tr) in enumerate([(0.30,0.011),(0.17,0.012),(0.03,0.013),(-0.12,0.012),(-0.26,0.010)]):
-    rr = 0.285*math.sqrt(max(0.04, 1-(lx/0.384)**2))*1.03
+# Sọc tabby: vòng quanh thân. Bán kính PHẢI suy từ bán kính thật của
+# ellipsoid thân. Trước đây dùng hằng số 0.285/0.384 hard-code theo scale cũ;
+# đổi scale thân sang (1.34,0.86,0.84) mà không sửa công thức → sọc nổi ra
+# ngoài thân thành VÒNG DÂY, lộ rõ trong render Blender.
+BODY_R, BODY_SX, BODY_SY, BODY_SZ = 0.300, 1.34, 0.86, 0.84
+AX, AY, AZ = BODY_R*BODY_SX, BODY_R*BODY_SY, BODY_R*BODY_SZ
+for i, (lx, tr) in enumerate([(0.30,0.022),(0.17,0.026),(0.03,0.027),(-0.12,0.025),(-0.26,0.020)]):
+    k = max(0.06, 1.0 - (lx/AX)**2)      # hệ số cắt ngang tại lx
+    # rr đặt ĐÚNG bằng bán kính mặt thân; ống to (tr lớn) nên nửa dải chìm
+    # vào da — đọc thành sọc vẽ trên lông thay vì vòng dây đeo quanh.
+    # trừ nửa bán kính ống để dải nằm SÁT mặt thân thay vì nổi lên
+    rr = AY*math.sqrt(k) - tr*0.55
     bpy.ops.mesh.primitive_torus_add(major_radius=rr, minor_radius=tr,
                                      major_segments=20, minor_segments=8,
                                      location=(-0.05+lx, 0, 0.27),
                                      rotation=(0, math.pi/2, 0))
     o = bpy.context.object; o.name = "stripe%d" % i
-    o.scale = (1, 0.96, 1)
+    # local X -> world Z (bán kính vòng theo chiều cao)
+    # local Y -> world Y (bán kính vòng theo chiều ngang)
+    # local Z -> world X (CHIỀU RỘNG của dải sọc)
+    o.scale = (AZ/AY, 1.0, 2.6)
     o.data.materials.append(M_FUR_D)
     bpy.ops.object.shade_smooth()
     body_parts.append(o)
@@ -139,13 +156,13 @@ hp.append(sphere("cheekR", 0.088, (0.05, -0.085, -0.02), (1.0,1.0,0.85), M_CREAM
 hp.append(sphere("muzzle", 0.078, (0.155, 0, -0.055), (1.0,1.15,0.85), M_CREAM))
 hp.append(sphere("nose",   0.026, (0.215, 0, -0.035), (1.0,1.2,0.9), M_PINK))
 for s in (1, -1):                                   # tai
-    hp.append(cone("ear", 0.010, 0.080, 0.17, (0.0, s*0.118, 0.205),
-                   rot=(s*0.26, 0, 0), material=M_FUR))
-    hp.append(cone("earIn", 0.006, 0.046, 0.11, (0.012, s*0.115, 0.202),
-                   rot=(s*0.26, 0, 0), material=M_PINK))
+    hp.append(cone("ear", 0.012, 0.062, 0.13, (0.01, s*0.122, 0.185),
+                   rot=(s*0.42, 0.10, 0), material=M_FUR))
+    hp.append(cone("earIn", 0.007, 0.034, 0.085, (0.022, s*0.122, 0.186),
+                   rot=(s*0.42, 0.10, 0), material=M_PINK))
 # mắt: dùng sphere đen + đốm sáng để đọc được ở xa
 for s in (1, -1):
-    hp.append(sphere("eye",  0.046, (0.145, s*0.088, 0.030), (0.8,1.0,1.0), M_DARK, 18, 12))
+    hp.append(sphere("eye",  0.050, (0.128, s*0.092, 0.028), (0.75,1.0,1.05), M_DARK, 18, 12))
     hp.append(sphere("pupilHi", 0.014, (0.172, s*0.100, 0.052), (1,1,1), M_WHITE, 10, 8))
 # ria mép
 for s in (1, -1):
@@ -166,22 +183,31 @@ hpp.append(sphere("helBrim",  0.206, (0.02, 0, -0.10), (1.12, 1.02, 0.42), M_WHI
 hpp.append(cone("helStripe", 0.012, 0.012, 0.30, (-0.01, 0, 0.16),
                 rot=(math.pi/2, 0, 0), material=M_RED))
 # kính: nửa vỏ cầu phía trước
-bpy.ops.mesh.primitive_uv_sphere_add(segments=24, ring_count=14, radius=0.223, location=(0,0,0))
+# Kính chỉ che MẶT TRƯỚC. Trước đây là nửa cầu đặc ở giữa mũ nên nuốt trọn
+# mặt mèo — nhìn ra chỉ thấy một khối xanh, không thấy mắt/mũm. Nay cắt bỏ mọi
+# đỉnh có x < 0.15 để kính thành tấm khiên trước mặt.
+bpy.ops.mesh.primitive_uv_sphere_add(segments=24, ring_count=14, radius=0.215, location=(0,0,0))
 vis = bpy.context.object; vis.name = "visor"
-vis.scale = (0.86, 0.94, 0.62)
-vis.location = (0.10, 0, -0.02)
-bpy.ops.object.shade_smooth()
-# chỉ giữ mặt trước (xo > 0) để kính không nuốt trọn mũ
-for p in vis.data.polygons:
-    p.material_index = 0
+vis.scale = (0.62, 0.92, 0.52)
+bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+vis.location = (0.115, 0, -0.045)
+CUT = 0.20
 bpy.ops.object.select_all(action='DESELECT')
 vis.select_set(True); bpy.context.view_layer.objects.active = vis
 bpy.ops.object.mode_set(mode='EDIT')
+bpy.ops.mesh.select_all(action='DESELECT')
+n_cut = 0
+for v in vis.data.vertices:
+    if v.co.x < CUT:
+        v.select = True; n_cut += 1
+bpy.ops.mesh.delete(type='VERT')
 bpy.ops.mesh.select_all(action='SELECT')
 bpy.ops.mesh.normals_make_consistent(inside=False)
 bpy.ops.object.mode_set(mode='OBJECT')
+bpy.ops.object.shade_smooth()
 vis.data.materials.append(M_GLASS)
 hpp.append(vis)
+print("[meo] kinh: cat bo %d dinh o sau" % n_cut, flush=True)
 # đèn trên mũ
 hpp.append(sphere("lamp", 0.038, (0.12, 0, 0.205), (1.0,1.0,0.7), M_LAMP, 14, 10))
 offset(hpp, (0.30, 0.0, 0.545))  # mũ lên đúng đầu
@@ -333,6 +359,26 @@ for gname, ob in sorted(merged.items()):
     print("   %-9s x[%7.3f %7.3f] y[%7.3f %7.3f] z[%7.3f %7.3f]" % (
         gname, mn.x, mx.x, mn.y, mx.y, mn.z, mx.z), flush=True)
 print("[meo] nhom:", sorted(merged.keys()), flush=True)
+
+# ───────────────────────── lưu .blend ─────────────────────────
+# Lưu TRƯỚC khi xuất glTF: export_apply sẽ áp transform vào mesh, xuất xong
+# scene trong Blender không còn đúng như lúc dựng. .blend là file NGUỒN để mở
+# ra sửa tiếp trong Blender — GLB chỉ là bản xuất cho game.
+BLEND = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "models", "meo-vang.blend"))
+os.makedirs(os.path.dirname(BLEND), exist_ok=True)
+# mở ra nhìn thấy ngay con mèo ở giữa khung hình, xem vật liệu
+for a in bpy.context.window.screen.areas:
+    if a.type == 'VIEW_3D':
+        for sp in a.spaces:
+            if sp.type == 'VIEW_3D':
+                sp.shading.type = 'MATERIAL'
+                sp.overlay.show_floor = True
+                sp.overlay.show_axis_x = True
+                sp.overlay.show_axis_y = True
+bpy.ops.object.select_all(action='DESELECT')
+bpy.context.scene.cursor.location = (0, 0, 0.3)
+bpy.ops.wm.save_as_mainfile(filepath=BLEND, compress=True)
+print("[meo] LUU .blend:", BLEND, "%.1f KB" % (os.path.getsize(BLEND)/1024.0), flush=True)
 
 # ───────────────────────── xuất glTF ─────────────────────────
 os.makedirs(OUT_DIR, exist_ok=True)
