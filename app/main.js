@@ -1,5 +1,12 @@
 import * as THREE from 'three';
 import { decodePatches, PATCH_N, PATCH_ORDER, PATCH_IDX, PATCH_RELIEF } from './mola-patches.js';
+// Phase 2 Task 2.4 — post-processing. Tất cả đều đã có sẵn trong three@0.160.
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass }      from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { ShaderPass }      from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass }      from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { FXAAShader }      from 'three/examples/jsm/shaders/FXAAShader.js';
 
 // ---------- Config ----------
 const BIOMES = [
@@ -100,6 +107,11 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias:true, alpha:false, 
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// autoReset mặc định reset info ở MỖI lần renderer.render(). Khi bật composer,
+// lượt render cuối là pass hình vuông toàn màn hình → info chỉ còn "1 draw, 1 tri"
+// và số liệu trở nên vô nghĩa. Tắt autoReset và reset thủ công đầu mỗi khung:
+// giờ số liệu là TỔNG của cả cảnh + các pass hậu kỳ — đúng thứ cần đo.
+renderer.info.autoReset = false;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
 
@@ -126,6 +138,13 @@ let gfxName = (() => {
 })();
 
 // Áp dụng preset. Gọi lại an toàn nhiều lần (đổi preset lúc chạy).
+// Phase 2 Task 2.4 — trạng thái post-FX.
+// PHẢI khai báo TRƯỚC applyGraphicsPreset(): hàm đó được gọi lúc khởi tạo và gọi
+// applyPostFX(), nếu khai báo sau sẽ TDZ -> ReferenceError lúc boot. Đã dính lỗi
+// này một lần; giữ nguyên vị trí này.
+let composer = null, renderPass = null, bloomPass = null, fxaaPass = null, gradePass = null;
+let postEnabled = false;
+
 function applyGraphicsPreset(name, save){
   if (!GFX_PRESETS[name]) return gfxName;
   gfxName = name;
@@ -133,6 +152,11 @@ function applyGraphicsPreset(name, save){
   const target = g.renderScale * Math.min(devicePixelRatio, 2);
   renderer.setPixelRatio(target);
   renderer.setSize(innerWidth, innerHeight, false);
+  // Post-FX phải đi sau setPixelRatio/setSize: EffectComposer tự tạo render
+  // target theo kích thước lúc khởi tạo, nếu không setSize lại thì preset
+  // renderScale (low 0.70) bị vô hiệu hoá khi bật post-FX.
+  applyPostFX(name);
+  resizePostFX();
   // Shadow: 0 = tắt hoàn toàn (tiết kiệm lớn nhất trên mobile)
   const wantShadow = g.shadow > 0;
   const wasShadow = renderer.shadowMap.enabled;
@@ -3075,13 +3099,19 @@ function frame(now){
   // Động tác lái: cánh tay mèo bám ghi đông, xoay theo input.l-r thật
   updateRidingPose(dt, (input.l?1:0) - (input.r?1:0), speedKmh, input.boost);
   updateCamera(dt);
-  renderer.render(scene, camera);
+  renderer.info.reset();   // đặt lại ở đầu khung, cộng dồn qua mọi pass
+  // Post-FX: composer.render() tự lo tone mapping + chuyển không gian màu
+  // qua OutputPass, nên không render thẳng nữa khi đang bật.
+  if (postEnabled && composer) composer.render(dt);
+  else renderer.render(scene, camera);
+  if (gradePass) gradePass.uniforms.uTime.value = now * 0.001;
 }
 
 // ---------- Resize ----------
 function onResize(){
   camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight, false);
+  resizePostFX();   // nếu quên, post-FX giữ kích thước cũ và méo khung hình
 }
 addEventListener('resize', onResize);
 onResize();
@@ -3112,6 +3142,109 @@ const loadIv=setInterval(()=>{
   if(loadP>=100){ clearInterval(loadIv); hideLoading(); applyTime(); setVehicle(vehicleType); updateHint(); updateJournalPhase3(); drawMini(); drawBigMap(); renderJournalCards(); requestAnimationFrame(frame); }
 }, 55);
 loadText.textContent='Đang dựng đồng bằng Arcadia và đánh thức Mèo Vàng...';
+
+// ════════════════════════════════════════════════════════════════════════════
+// POST-FX — Phase 2 Task 2.4
+//
+// Ba thứ đắt nhất gộp vào MỘT shader pass để chỉ tốn một lượt toàn màn hình:
+//   vignette + tương phản + bão hòa + split-tone + hạt phim
+// Split-tone (vùng sáng ấm, vùng tối lạnh) là thứ cho cảm giác "cinematic"
+// rẻ nhất — không cần mô hình PBR nào thêm.
+//
+// Bloom dùng NGƯỠNG SÁNG cao thay cho "selective bloom" 2 lượt: chỉ thứ thật
+// sáng mới nở (beacon, đèn pha, mặt trời, đèn ghi công cụ). Rẻ hơn nhiều và
+// đúng ý nghĩa — thứ tối không cần nở.
+//
+// Bật/tắt theo preset đồ họa: low không post gì, medium chỉ grade, high+ thêm
+// FXAA và bloom. Không có post-FX thì render thẳng như cũ.
+const GradeShader = {
+  uniforms: {
+    tDiffuse:   { value: null },
+    uVignette:  { value: 0.42 },   // độ sâu vignette
+    uContrast:  { value: 1.09 },
+    uSaturation:{ value: 1.12 },
+    uWarm:      { value: 0.10 },   // tương phản vùng sáng (ngả vàng)
+    uCool:      { value: 0.06 },   // tương phản vùng tối (ngả xanh)
+    uGrain:     { value: 0.030 },
+    uTime:      { value: 0 },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }
+  `,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform float uVignette, uContrast, uSaturation, uWarm, uCool, uGrain, uTime;
+    varying vec2 vUv;
+    // nhiễu 0..1 không cần hạt phim toán học: đủ để phá dải màu phẳng
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+    void main(){
+      vec3 c = texture2D(tDiffuse, vUv).rgb;
+      float l = dot(c, vec3(0.2126, 0.7152, 0.0722));   // độ sáng nhận thức
+
+      // split-tone: giữ tối lạnh, sáng ấm — đọc ra chiều sâu
+      c += uWarm * l * vec3( 1.00, 0.72, 0.34);
+      c += uCool * (1.0 - l) * vec3(0.26, 0.52, 1.00);
+
+      // tương phản quanh trung tính 0.5, không làm trôi điểm đen/trắng
+      c = (c - 0.5) * uContrast + 0.5;
+      // bão hòa quanh độ sáng gốc để vùng tối không bị chảy màu
+      c = mix(vec3(l), c, uSaturation);
+
+      // vignette mượt, tính theo bán kính chuẩn hoá để không méo theo tỉ lệ khung
+      vec2 d = (vUv - 0.5) * vec2(1.0, 0.92);
+      float vig = smoothstep(0.78, 0.22, length(d));
+      c *= mix(1.0, vig, uVignette);
+
+      // hạt phim: cộng trước rồi kẹp, đừng nhân (nhân làm vùng tối bị đen hẳn)
+      c += (hash(vUv * 1024.0 + uTime) - 0.5) * uGrain;
+
+      gl_FragColor = vec4(max(c, 0.0), 1.0);
+    }
+  `,
+};
+
+
+function initPostFX(){
+  if (composer) return;
+  composer = new EffectComposer(renderer);
+  renderPass = new RenderPass(scene, camera);
+  composer.addPass(renderPass);
+  bloomPass = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.55, 0.62, 0.86);
+  composer.addPass(bloomPass);
+  fxaaPass = new ShaderPass(FXAAShader);
+  composer.addPass(fxaaPass);
+  gradePass = new ShaderPass(GradeShader);
+  composer.addPass(gradePass);
+  composer.addPass(new OutputPass());
+}
+
+/** Bật/tắt từng pass theo preset. low -> không post gì, render thẳng. */
+function applyPostFX(gfxName){
+  const level = { low:0, medium:1, high:2, cinematic:3 }[gfxName] ?? 1;
+  postEnabled = level > 0;
+  if (!postEnabled){ return false; }
+  initPostFX();
+  gradePass.enabled = true;
+  gradePass.uniforms.uGrain.value = level >= 3 ? 0.038 : 0.026;
+  gradePass.uniforms.uVignette.value = level >= 3 ? 0.50 : 0.40;
+  fxaaPass.enabled = level >= 2;
+  bloomPass.enabled  = level >= 2;
+  bloomPass.strength = level >= 3 ? 0.72 : 0.48;
+  if (fxaaPass.enabled){
+    const pr = renderer.getPixelRatio();
+    fxaaPass.material.uniforms.resolution.value.set(1/(innerWidth*pr), 1/(innerHeight*pr));
+  }
+  return true;
+}
+
+function resizePostFX(){
+  if (!composer) return;
+  composer.setSize(innerWidth, innerHeight);
+  const pr = renderer.getPixelRatio();
+  if (fxaaPass && fxaaPass.enabled)
+    fxaaPass.material.uniforms.resolution.value.set(1/(innerWidth*pr), 1/(innerHeight*pr));
+}
 
 // ═══ Gán layer ánh sáng cho cascade 2 lớp (Task 2.3) ═══
 // Gọi MỘT LẦN sau khi mọi vật thể đã được dựng và thêm vào scene.
@@ -3145,7 +3278,7 @@ function applyHudDriveMode(on){
   }
   document.getElementById('hud')?.classList.toggle('hud-compact', on);
 }
-let perfAcc = 0, perfFrames = 0, perfFps = 0;
+let perfAcc = 0, perfFrames = 0, perfFps = 0, perfLow = 0, perfAutoOff = false;
 function updatePerfHud(dt){
   if (!perfEl) return;
   perfAcc += dt; perfFrames++;
@@ -3153,8 +3286,18 @@ function updatePerfHud(dt){
   perfFps = Math.round(perfFrames / perfAcc);
   perfAcc = 0; perfFrames = 0;
   const i = renderer.info.render;
+  // Chốt an toàn: không đo được hiệu năng thật của thiết bị người chơi, nên nếu
+  // FPS trụt dưới ngưỡng 3 lần liên tiếp thì tự tắt post-FX thay vì để máy
+  // khó chơi. Người chơi có thể bật lại tay ở dropdown đồ họa.
+  perfLow = perfFps < 45 ? perfLow+1 : 0;
+  if (postEnabled && perfLow >= 3){
+    postEnabled = false;
+    perfAutoOff = true;
+    console.warn('[perf] tự tắt post-FX: FPS thấp (' + perfFps + ')');
+  }
   perfEl.textContent = perfFps + ' FPS · ' + i.calls + ' draw · ' +
-                        Math.round(i.triangles/1000) + 'k tri · ' + gfxName;
+                        Math.round(i.triangles/1000) + 'k tri · ' + gfxName +
+                        (perfAutoOff && !postEnabled ? ' · post tắt(tự động)' : '');
 }
 
 // expose for debug
@@ -3219,4 +3362,6 @@ window.__yc={ scene, player, camera, renderer, BIOMES, POIS, heightAt, sampleHei
   },
 
   forceSettle(){ settleToGround(); player.position.copy(playerPos); player.rotation.set(targetPitch, -playerYaw, targetRoll, 'YXZ'); },
-  get hf(){ return HF; }, setTime(t){ timeOfDay=t; applyTime(); return timeOfDay; }, get timeOfDay(){ return timeOfDay; }, forceStorm(){ stormTarget=0.9; stormEndsAt=performance.now()+30000; stormBanner.style.display='flex'; }, galleryList, refreshGalleryCache, openDiscovery, saveState(){ save(); return { distance, collected, discovered:[...discovered], playTimeSec }; } };
+  setPostEnabled(on){ postEnabled=!!on; if(postEnabled) initPostFX(); return postEnabled; },
+  setPass(n,on){ const m={grade:gradePass,bloom:bloomPass,fxaa:fxaaPass,render:renderPass}[n]; if(m) m.enabled=!!on; return !!m; },
+  postState(){ return { enabled:postEnabled, hasComposer:!!composer, bloom:!!(bloomPass&&bloomPass.enabled), fxaa:!!(fxaaPass&&fxaaPass.enabled), grade:!!(gradePass&&gradePass.enabled) }; }, get gfxName(){ return gfxName; }, get hf(){ return HF; }, setTime(t){ timeOfDay=t; applyTime(); return timeOfDay; }, get timeOfDay(){ return timeOfDay; }, forceStorm(){ stormTarget=0.9; stormEndsAt=performance.now()+30000; stormBanner.style.display='flex'; }, galleryList, refreshGalleryCache, openDiscovery, saveState(){ save(); return { distance, collected, discovered:[...discovered], playTimeSec }; } };

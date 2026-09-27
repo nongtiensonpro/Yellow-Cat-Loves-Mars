@@ -324,3 +324,51 @@ t=0.25 → sunH= 0  BÌNH MINH    t=0.75 → sunH= 0  HOÀNG HÔN
 (sunH = sin(t·2π − π/2)). Mặc định cũ đặt mặt trời **220 m dưới mặt đất**.
 Nay dùng `0.33`. Dùng `__yc.setTime(t)` khi chụp ảnh — nếu không mỗi lần chụp
 có thể rơi vào thời điểm khác và không so sánh được.
+
+## 14. Post-FX (Task 2.4, 2026-09-27)
+
+| Preset | grade | FXAA | bloom | Ghi chú |
+|---|---|---|---|---|
+| `low` | ✗ | ✗ | ✗ | render thẳng, không tạo composer |
+| `medium` | ✓ | ✗ | ✗ | rẻ nhất, vẫn có màu |
+| `high` | ✓ | ✓ | ✓ | |
+| `cinematic` | ✓ | ✓ | ✓ | grade mạnh hơn, grain nhiều hơn |
+
+Một `ShaderPass` gộp **vignette + tương phản + bão hòa + split-tone + hạt phim** —
+ba thứ đắt nhất gộp làm một lượt toàn màn hình. Split-tone (sáng ấm / tối lạnh)
+là cách rẻ nhất để có cảm giác cinematic: không cần thêm mô hình PBR nào.
+
+**Bloom dùng ngưỡng sáng cao, không dùng selective bloom 2 lượt.** Chỉ thứ thật
+sáng mới nở (beacon, đèn pha, mặt trời). Rẻ hơn nhiều và đúng ý — thứ tối không
+cần nở.
+
+### Đo được (cùng preset `cinematic`, chỉ bật/tắt post-FX)
+
+| | mean | p5 | p95 | contrast | dark% |
+|---|---|---|---|---|---|
+| tắt | 59.1 | 16.2 | 114.0 | 97.7 | 11.3 |
+| bật | 57.5 | 11.5 | **149.0** | **137.5** | 16.9 |
+
+Dải động +39.7, đỉnh sáng +35, độ sáng trung bình giữ nguyên (-1.6).
+
+### ⚠️ Chi phí thật: FPS 102 → 47.6
+
+Đo bằng **SwiftShader (render phần mềm)** — môi trường probe không có GPU thật,
+nơi pass toàn màn hình đắt bất thường. Số này có thể quá thận trọng, cũng có
+thể đúng trên máy yếu. **Không đo được phần cứng thật của người chơi.**
+
+Vì vậy có **chốt an toàn**: FPS < 45 liên tiếp 3 lần → tự tắt post-FX, HUD ghi
+`post tắt(tự động)`, bật lại tay ở dropdown đồ họa.
+
+### Bẫy đo: `renderer.info` mặc định vô dụng khi có composer
+
+`autoReset` mặc định reset info ở **mỗi** `renderer.render()`. Lượt render cuối
+của composer chỉ là hình vuông hậu kỳ → info chỉ còn "1 draw, 1 tri". Đã đặt
+`autoReset = false` + `reset()` thủ công đầu khung; giờ số là **tổng** của cảnh
++ các pass.
+
+### Bẫy TDZ
+
+`applyGraphicsPreset()` chạy lúc khởi tạo và gọi `applyPostFX()`. Khai báo
+`let composer` **sau** nó → `ReferenceError`, app không boot. Khai báo trạng thái
+post-FX phải nằm trước hàm đó.
