@@ -1192,9 +1192,106 @@ const dustGeo=new THREE.BufferGeometry();
 const dustPos=new Float32Array(dustCount*3);
 for(let i=0;i<dustCount;i++){ dustPos[i*3]=(Math.random()-0.5)*600; dustPos[i*3+1]=2+Math.random()*40; dustPos[i*3+2]=(Math.random()-0.5)*600; }
 dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPos,3));
-const dustMat=new THREE.PointsMaterial({ color:0xffc08a, size:1.8, transparent:true, opacity:0.0, sizeAttenuation:true, depthWrite:false });
-const dustPoints=new THREE.Points(dustGeo, dustMat);
-scene.add(dustPoints);
+// ── BÃO BỤI 3 LỚP — Phase 2 Task 2.6 ──
+// Trước đây MỘT lớp hạt kích thước 1.8: ở mọi khoảng cách đều trông như nhau,
+// nên bão đọc ra "sương mờ" chứ không phải bão bụi Sao Hỏa. Ba lớp tách chiều:
+//   A · hạt mịn lơ lửng  — cận, nhỏ, mờ, cuộn chậm
+//   B · đám bụi trôi    — giữa cự ly, to, bay ngang nhanh, tạo vệt
+//   C · tường bụi xa    — màn dày ở xa, đậy theo stormLevel, HÚT tầm nhìn
+// Tầng C không chỉ cho đẹp: nó che rìa bản đồ, nên không cần vẽ địa hình tới
+// 1400m nữa — cắt được draw distance mà không mất cảm giác không gian.
+// Cả ba quanh người chơi, quấn theo modulo nên vô hạn trong bản đồ 1400m.
+const DUST_BOX = 520;                     // bán kính hộp bọc theo người chơi
+function makeDustLayer(n, box, size, color, opacity, yLo, yHi){
+  const g = new THREE.BufferGeometry();
+  const pos = new Float32Array(n*3), spd = new Float32Array(n*2);
+  for (let i=0;i<n;i++){
+    pos[i*3]   = (Math.random()-0.5)*2*box;
+    pos[i*3+1] = yLo + Math.random()*(yHi-yLo);
+    pos[i*3+2] = (Math.random()-0.5)*2*box;
+    spd[i*2]   = 0.6 + Math.random()*1.5;      // hướng + tốc độ ngang
+    spd[i*2+1] = Math.random()*Math.PI*2;      // hướng góc
+  }
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('aspd',    new THREE.BufferAttribute(spd, 2));
+  const m = new THREE.PointsMaterial({ color, size, transparent:true, opacity:0,
+    sizeAttenuation:true, depthWrite:false });
+  const pts = new THREE.Points(g, m);
+  pts.frustumCulled = false;                   // luôn bám người chơi, không cần cắt
+  pts.renderOrder = 3;
+  scene.add(pts);
+  return { pts, geo:g, mat:m, n, box, pos, spd, base:opacity };
+}
+const dustA = makeDustLayer(2600,  55, 0.55, 0xffd2a0, 0.30,  0.2, 14);  // hạt mịn
+const dustB = makeDustLayer( 420, 230, 4.20, 0xffbe86, 0.13,  1.0, 26);  // đám trôi
+// Tầng C: vòng tròn bọc quanh người chơi ở 430m, dùng gradient mềm
+const dustCTex = (()=>{
+  const c=document.createElement('canvas'); c.width=64; c.height=64;
+  const g=c.getContext('2d');
+  // gradient PHẢI dùng RGB trắng, chỉ đổi alpha. MeshBasicMaterial tính
+  // map.rgb × color, nên gradient đen sẽ cho ra mảng ĐEN đặc phủ kín màn hình
+  // (đã dính: toàn màn hình thành đen khi bão). Muốn mảng ở đây là độ phủ
+  // của BỤI, không phải màu của bụi — màu lấy từ `color` bên dưới.
+  const grd=g.createRadialGradient(32,32,4, 32,32,32);
+  grd.addColorStop(0,'rgba(255,255,255,0)');
+  grd.addColorStop(0.55,'rgba(255,255,255,0.55)');
+  grd.addColorStop(1,'rgba(255,255,255,0.92)');
+  g.fillStyle=grd; g.fillRect(0,0,64,64);
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace; return t;
+})();
+const dustC = new THREE.Mesh(
+  new THREE.CylinderGeometry(430, 430, 210, 32, 1, true),
+  new THREE.MeshBasicMaterial({ map:dustCTex, color:0xc4713f, transparent:true,
+    opacity:0, side:THREE.BackSide, depthWrite:false, fog:false })
+);
+dustC.renderOrder = 2;
+scene.add(dustC);
+const DUSTC_R = 430;
+// PHẢI là Color, không phải Vector3. Dùng nhầm Vector3 ở đây làm
+// Color.copy() nhận sai kiểu -> mọi thành phần thành NaN -> '#000NaN' ->
+// toàn màn hình ĐEN khi có bão. Đã dính và phát hiện qua dump màu vật thể.
+const _dustTmp = new THREE.Color();
+
+/** Cập nhật ba lớp bụi. `storm` 0..1, `turb` = mức xao động theo tốc độ. */
+function updateDust(dt, storm, turb, atmo){
+  // A — hạt mịn: cuộn chậm, bay lên nhẹ
+  updateDustLayer(dustA, dt, 1.0 + turb*2.2, 0.0, 0.9);
+  // B — đám bụi: bay ngang nhanh hơn nhiều, tạo cảm giác gió
+  updateDustLayer(dustB, dt, 4.0 + turb*7.0, 0.0, 2.4);
+  const dm = atmo ?? 1;
+  dustA.mat.opacity = dustA.base * dm * (0.22 + storm*1.5 + turb*0.9);
+  dustB.mat.opacity = dustB.base * dm * (0.10 + storm*2.2 + turb*0.7);
+  // C — tường bụi: gần như vô hình khi trời, dày lên khi bão
+  dustC.material.opacity = Math.min(0.92, storm*1.15) * dm * 0.85;
+  dustC.material.color.copy(_dustTmp.set(0xc4713f)).lerp(scene.fog.color, 0.55);
+  // Cả ba bám theo người chơi
+  dustA.pts.position.set(playerPos.x, 0, playerPos.z);
+  dustB.pts.position.set(playerPos.x, 0, playerPos.z);
+  dustC.position.set(playerPos.x, 62, playerPos.z);
+  dustC.visible = dustC.material.opacity > 0.01;
+}
+
+/** Trôi hạt theo gió rồi quấn về hộp quanh người chơi (modulo). */
+function updateDustLayer(L, dt, windK, yLift, rise){
+  const a = L.geo.attributes.aspd.array;
+  const p = L.pos, b = L.box;
+  const cx = playerPos.x, cz = playerPos.z;
+  for (let i=0;i<L.n;i++){
+    const i3 = i*3;
+    let x = p[i3] + Math.cos(a[i*2+1]) * a[i*2] * windK * dt;
+    let y = p[i3+1] + rise * dt;
+    let z = p[i3+2] + Math.sin(a[i*2+1]) * a[i*2] * windK * dt;
+    // quấn theo vị trí TƯƠNG ĐỐI với người chơi (đã cộng sẵn vào pts.position)
+    if (x >  b) x -= 2*b; else if (x < -b) x += 2*b;
+    if (z >  b) z -= 2*b; else if (z < -b) z += 2*b;
+    if (y >  30) y -= 30; else if (y < 0) y += 30;
+    p[i3] = x; p[i3+1] = y; p[i3+2] = z;
+  }
+  L.geo.attributes.position.needsUpdate = true;
+  L.geo.attributes.aspd.needsUpdate = true;
+}
+// giữ tên cũ để code đang chạy không vỡ
+const dustMat = dustA.mat, dustPoints = dustA.pts;
 
 // ════════════════════════════════════════════════════════════════════════════
 // CONTACT SHADOW + VỆT BÁNH — Giai đoạn 1 P0 Task 1.3
@@ -2208,6 +2305,14 @@ addEventListener('keydown', e=>{
   if(k==='m') toggleMap();
   if(k==='p') togglePhoto();
   if(k==='l'){ timeOfDay=(timeOfDay+0.25)%1; applyTime(); }
+  // Phím F: bật/tắt ô đo FPS + preset đồ họa. Cần khi người chơi muốn tự
+  // xem máy mình chịu được bao nhiêu — không đoán giúp được, phải đo trên
+  // phần cứng thật.
+  if(k==='f' && !e.repeat){
+    const on = document.documentElement.dataset.perf === '1';
+    document.documentElement.dataset.perf = on ? '0' : '1';
+    perfFps = 0; perfAcc = 0; perfFrames = 0;
+  }
   if(k==='h') toggleHelp();
   if(k==='escape'){ if(photoMode) togglePhoto(false); if(!overlayMap.classList.contains('hidden')) toggleMap(false); }
 });
@@ -3063,21 +3168,10 @@ function frame(now){
   drawMini();
   // dust
   const isStorm = bi.id==='storm';
-  dustMat.opacity = gfxDustMul * atmoDust * THREE.MathUtils.clamp( (isStorm?0.42:0.0) + Math.min(0.35, speedKmh/70) + stormLevel*0.5, 0, 0.95);
-  const dpos=dustGeo.attributes.position;
-  for(let i=0;i<dustCount;i++){
-    let x=dpos.getX(i), y=dpos.getY(i), z=dpos.getZ(i);
-    x += (Math.cos(playerYaw+0.4)* speed*0.02 + (Math.random()-0.5)*0.3);
-    z += (Math.sin(playerYaw+0.4)* speed*0.02 + (Math.random()-0.5)*0.3);
-    y += (Math.random()-0.5)*0.18 -0.02;
-    // wrap around player
-    if(Math.hypot(x-playerPos.x, z-playerPos.z)>320){ x=playerPos.x+(Math.random()-0.5)*320; z=playerPos.z+(Math.random()-0.5)*320; y=2+Math.random()*38; }
-    if(y<0.5) y=2+Math.random()*35;
-    if(y>45) y=2+Math.random()*10;
-    dpos.setXYZ(i,x,y,z);
-  }
-  dpos.needsUpdate=true;
-  dustPoints.position.copy(playerPos);
+  // Bão bụi 3 lớp (Task 2.6). Thay khối cũ: khối cũ vừa ghi vị trí hạt theo
+  // TOẠ ĐỘ TUYỆT ĐỐI vừa dịch cả Points theo playerPos → cộng hai lần, hạt bị
+  // đẩy lệch gấp đôi. Nay hạt nằm trong hộp CỤC BỘ quanh người chơi.
+  updateDust(dt, stormLevel, Math.min(1, speedKmh/55), atmoDust);
 
   // Phase 3: POI discovery
   if(!overlayDiscovery.classList.contains('hidden')===false){

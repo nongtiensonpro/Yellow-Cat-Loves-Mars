@@ -372,3 +372,37 @@ của composer chỉ là hình vuông hậu kỳ → info chỉ còn "1 draw, 1 
 `applyGraphicsPreset()` chạy lúc khởi tạo và gọi `applyPostFX()`. Khai báo
 `let composer` **sau** nó → `ReferenceError`, app không boot. Khai báo trạng thái
 post-FX phải nằm trước hàm đó.
+
+## 15. Bão bụi 3 l�ớp + đo FPS (Task 2.6, 2026-09-27)
+
+| Lớp | Số hạt | Cỡ | Bán kính hộp | Vai trò |
+|---|---|---|---|---|
+| A · hạt mịn | 2600 | 0.55 | 55 m | bụi lơ lửng sát xe |
+| B · đám trôi | 420 | 4.2 | 230 m | vệt bụi bay ngang, cảm giác gió |
+| C · tường bụi | — | — | 430 m | đậy theo bão, **che rìa bản đồ** |
+
+Trước đây MỘT lớp hạt cỡ 1.8 — ở mọi khoảng cách đều trông như nhau, nên bão
+đọc ra "sương mờ" chứ không phải bão bụi Sao Hỏa. Tầng C không chỉ cho đẹp: nó
+cho phép cắt draw distance mà không mất cảm giác không gian.
+
+### ⚠️ Ba bẫy đã dính, tất cả đều ra "màn hình đen"
+
+1. **Gradient của tầng C phải tô TRẮNG, chỉ đổi alpha.** `MeshBasicMaterial`
+   tính `map.rgb × color`; gradient đen cho ra mảng **đen đặc** phủ kín màn hình.
+   Muốn *độ phủ* chứ không phải *màu* → gradient trắng.
+2. **Biến tạm cho `Color` phải là `Color`, không phải `Vector3`.** Dùng nhầm thì
+   `Color.copy()` nhận sai kiểu → mọi thành phần thành `NaN` → `'#000NaN'` → đen.
+   Sửa lỗi 1 xong vẫn đen; phải **đo lại** mới thấy lỗi 2.
+3. **Lỗi có sẵn từ trước:** khối update bụi cũ ghi vị trí hạt theo **toạ độ tuyệt
+   đối** rồi lại `dustPoints.position.copy(playerPos)` → **cộng hai lần**, hạt bị
+   đẩy lệch gấp đôi. Nay hạt nằm trong hộp cục bộ quanh người chơi.
+
+**Bài học chung:** một triệu chứng ("đen màn hình") có thể do nhiều nguyên nhân
+chồng nhau. Sửa một lỗi rồi **đo lại** thay vì kết luận là xong.
+
+### Đo FPS trên máy thật: phím `F`
+
+Mọi số liệu trong tài liệu này đều đo bằng **SwiftShader (render phần mềm)** —
+không đại diện cho phần cứng người chơi. Bấm `F` để bật ô
+`FPS · draw · tri · preset`, đo bằng máy thật rồi mới quyết có hạ ngưỡng
+post-FX (Task 2.4) hay không.
