@@ -1,0 +1,121 @@
+# ─────────────────────────────────────────────���───────────────────────────────
+# Yellow Cat Loves Mars — CI/CD cho GitHub Pages
+#
+#   push/PR trên `master`  →  job `verify`  : build + smoke test (không deploy)
+#   push trên `master`     →  job `deploy`  : build rồi phát hành lên Pages
+#   workflow_dispatch      →  deploy thủ công
+#
+# Vì sao tách 2 job: smoke test bắt lỗi runtime (Three.js chỉ hỏng lúc chạy,
+# `node --check` không thấy) TRƯỚC khi phát hành. Deploy chỉ chạy khi verify xanh.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Deploy Pages
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+# Cho phép deploy đồng thời khi có push mới (không xếp hàng chờ)
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  verify:
+    name: Build + smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Cài dependencies
+        run: npm ci
+
+      - name: Kiểm tra cú pháp
+        run: node --check app/main.js && node --check app/boot.js && node --check vite.config.js
+
+      - name: Build
+        run: npm run build
+
+      - name: Kiểm tra precache của Service Worker
+        # SW precache phải trỏ đúng file thật của bản build (tên có hash).
+        # Nếu lệch, caches.addAll() sẽ 404 và PWA mất offline.
+        run: |
+          test -f dist/precache.json || { echo "❌ thiếu dist/precache.json"; exit 1; }
+          test -f dist/.nojekyll || { echo "❌ thiếu dist/.nojekyll"; exit 1; }
+          test -f dist/sw.js || { echo "❌ thiếu dist/sw.js"; exit 1; }
+          grep -q '__BUILD_ID__' dist/sw.js && { echo "❌ BUILD_ID chưa được thay"; exit 1; }
+          echo "precache.json:"; cat dist/precache.json
+          echo "sw.js build id:"; grep -o "BUILD_ID = '[^']*'" dist/sw.js
+
+      - name: Kiểm tra không còn phụ thuộc CDN lúc chạy
+        # Mọi asset phải đi kèm site (PWA chạy offline).
+        run: |
+          if grep -rlE 'unpkg\.com|jsdelivr\.net|cdnjs\.' dist --include='*.html' --include='*.js' --include='*.css'; then
+            echo "❌ còn tham chiếu CDN trong dist — PWA sẽ hỏng offline"; exit 1
+          fi
+          echo "✓ không còn tham chiếu CDN"
+
+      - name: Smoke test (Three.js + service worker)
+        # Dựng server tĩnh rồi chạy kịch bản thật trong Chromium headless.
+        run: |
+          npx --yes serve@14 dist -l 4173 &
+          npx --yes wait-on@7 http-get://127.0.0.1:4173 -t 30000
+          npx playwright install --with-deps chromium
+          TARGET=http://127.0.0.1:4173/ node tests/smoke-phase3.mjs
+        env:
+          TARGET: http://127.0.0.1:4173/
+
+      - name: Tải dist làm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+          retention-days: 7
+
+  deploy:
+    name: Phát hành lên GitHub Pages
+    # Chỉ khi verify xanh, và chỉ trên push trực tiếp vào master.
+    needs: verify
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Cài dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Cấu hình Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Đóng gói artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: Phát hành
+        id: deployment
+        uses: actions/deploy-pages@v4

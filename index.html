@@ -17,15 +17,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
 <link rel="stylesheet" href="./styles/main.css"/>
-<script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
-<script type="importmap">
-{
-  "imports": {
-    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
-  }
-}
-</script>
+<!-- Gỡ es-module-shims + importmap: Vite đã bundle three@0.160.0 vào main-*.js
+     (bundle không chứa tham chiếu unpkg). Giữ lại sẽ tạo request ngoài lúc chạy
+     và làm PWA offline hỏng. -->
 </head>
 <body>
 

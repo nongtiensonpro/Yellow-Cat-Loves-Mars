@@ -1,8 +1,23 @@
 // Smoke test Phase 3 — headless Edge against built dist via vite preview
 import { chromium } from 'playwright-core';
 
+import { existsSync } from 'node:fs';
+
 const URL = process.env.TARGET || 'http://127.0.0.1:5176/';
-const EXE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
+
+// Trình duyệt: ưu tiên Edge/Chrome đã cài sẵn trên máy (chạy nhanh, có GPU).
+// Trên CI Linux không có sẵn -> để playwright-core tự dùng Chromium do
+// `npx playwright install chromium` cài sẵn (executablePath = undefined).
+const CANDIDATES = [
+  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  '/usr/bin/google-chrome',
+  '/usr/bin/microsoft-edge',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+];
+const EXE = CANDIDATES.find((p) => { try { return existsSync(p); } catch { return false; } });
+if (!process.env.CI) console.log('[smoke] browser:', EXE || '(playwright bundled)');
 
 const errors = [];
 const browser = await chromium.launch({ executablePath: EXE, headless: true, args: ['--use-gl=angle', '--enable-unsafe-swiftshader', '--mute-audio'] });
