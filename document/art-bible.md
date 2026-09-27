@@ -507,3 +507,64 @@ Probe chốt: `tests/_probe_time.mjs` assert `sun.intensity` phải có **≥ 3 
 
 ### Bảng đồ vùng ảnh mốc giờ
 - `tests/tg-dem.png` · `tests/tg-binhminh.png` · `tests/tg-trua.png` · `tests/tg-hoanghon.png`
+
+## 18. Nhiễu nhiệt · cánh nắng · bụi bám (Task 3.3, 2026-09-27)
+
+Ba hiệu ứng của Task 3.3, cùng một nguyên tắc: **không thêm mesh vào scene** —
+cả hai hiệu ứng toàn màn hình nằm trong composer sẵn có, còn bụi bám là biến
+đổi vật liệu. Draw call gần như không đổi.
+
+### 18.1 Nhiễu nhiệt + cánh nắng (pass toàn màn hình)
+
+Thứ tự trong composer: `RenderPass → bloom → FXAA → grade → haze → rays → OutputPass`.
+Haze và rays **sau grade** để không bị grade nén lại lần nữa.
+
+| preset | haze | rays |
+|---|---|---|
+| `low` | tắt (render thẳng) | tắt |
+| `medium` | tắt | tắt |
+| `high` | **bật** | tắt |
+| `cinematic` | **bật** | **bật** |
+
+Cánh nắng dùng kỹ thuật volumetric scattering (20 vòng lấy mẫu mỗi pixel) —
+đắt nhất chuỗi nên chỉ bật ở `cinematic`.
+
+Cường độ **không tự tính**, lấy từ mốc giờ (Task 3.2):
+
+| Giờ | `uAmount` (haze) | `uStrength` (rays) |
+|---|---|---|
+| Đêm | 0.00 | 0.00 |
+| Bình minh | 0.55 | 0.85 |
+| Trưa | 0.85 | 0.38 |
+| Hoàng hôn | 0.70 | 0.85 |
+
+Đêm tắt hẳn — để lại sẽ hiện vệt sáng trên nền tối và trông như lỗi.
+Haze chỉ rung ở vùng **dưới** `uBand` (0.62) vì khí gần mặt đất nóng nhất;
+`uSunVis` tắt khi mặt trời ở sau lưng, nhưng **vẫn giữ khi lọt ra ngoài khung**
+để vệt chạy vào từ mép — tắt sớm làm vệt nhấp nháy mỗi lần xoay camera.
+
+### 18.2 Bụi bám trên xe
+
+`autoMat()` cache vật liệu và **dùng chung giữa xe, mèo, đá landmark**. Ghi thẳng
+`.color` để phủ bụi thì cả ba cùng bám. Nên `collectDustTargets()` **clone** ra
+instance riêng cho từng vật liệu trên xe — `clone()` giữ nguyên tham số nên vẫn
+dùng chung shader program, chỉ tốn vài lần nạp uniform.
+
+Bỏ qua khi thu thập:
+- Vật liệu không PBR (`typeof roughness !== 'number'`) — đĩa đổ bóng `MeshBasicMaterial`.
+- Vật liệu phát sáng — đèn pha phải sáng, bụi không làm đèn to lên.
+
+Đặc tính: `level = clamp((distance + stormLevel·260)/600, 0, 1)`, bão làm bám nhanh
+hơn vì bụi mịn lơ lửng. Tác dụng: màu trộn 78% về `#b08464` **và** roughness
+tăng 0.42, clearcoat giảm 85%. Tăng nhám là phần quan trọng — bụi không phản xạ
+gương, nên chỉ đổi màu sẽ trông như "xe sơn màu khác" chứ không phải "bụi bám".
+
+### ⚠️ Bẫy đã gặp: `if (m.emissive)` luôn đúng
+
+`THREE.Color` là **object** nên `m.emissive` luôn truthy kể cả khi đen, còn
+`emissiveIntensity` mặc định `1.0`. Bộ lọc `if (m.emissive && m.emissiveIntensity > 0.5)`
+loại **28 trên 30 vật liệu** xe, chỉ còn lại 2 — bụi gần như không thấy.
+Phải kiểm tra **màu** phát sáng thật: `em.r + em.g + em.b > 0.02`.
+
+Số đo: bike 25 / moto 20 / rover 22 vật liệu được phủ bụi (sau khi sửa).
+Kiểm tra rò: 446 mesh ngoài xe giữ nguyên vật liệu gốc.

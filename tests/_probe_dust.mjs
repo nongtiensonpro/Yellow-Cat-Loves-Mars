@@ -4,37 +4,59 @@ const EXE = ['C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
              'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'].find(p=>existsSync(p));
 const b = await chromium.launch({ executablePath:EXE, headless:true,
   args:['--use-gl=angle','--enable-unsafe-swiftshader','--mute-audio'] });
-const page = await (await b.newContext({viewport:{width:1000,height:600}})).newPage();
-const errs=[]; page.on('pageerror',e=>errs.push('PAGEERROR: '+e.message));
-page.on('console', m=>{ if(m.type()==='error') errs.push(m.text().slice(0,180)); });
+const page = await (await b.newContext({viewport:{width:800,height:500}})).newPage();
+const errs=[]; page.on('pageerror',e=>errs.push(e.message));
 await page.goto(process.env.TARGET, { waitUntil:'networkidle', timeout:40000 });
 await page.click('#btn-start');
 await page.waitForFunction(()=>!!window.__yc, null, {timeout:60000});
-await page.waitForTimeout(4000);
-const OVS=['#overlay-vehicle','#overlay-discovery','#overlay-map','#overlay-landing'];
-const CLOSE=['#btn-discovery-close','#btn-pick-cancel','#btn-vehicle-close','#btn-map-close','#btn-journal-close','#btn-gallery-close','#btn-lightbox-close'];
-const closeAll=async()=>{
-  for(const s of CLOSE){ const e=await page.$(s); if(e && await e.isVisible().catch(()=>false)) await e.click().catch(()=>{}); }
-  await page.evaluate(o=>{for(const id of o){const e=document.querySelector(id); if(e)e.style.display='none';}},OVS);
-  await page.waitForTimeout(400);
-};
-await closeAll();
-// BẬT ô FPS bằng phím F (đúng cách người chơi sẽ dùng)
-await page.keyboard.press('f');
-await page.waitForTimeout(600);
-console.log('ô FPS hiện không?:', await page.evaluate(()=>document.getElementById('hud-perf-pill') && getComputedStyle(document.getElementById('hud-perf-pill')).display));
-for (const [id, forceStorm] of [['yen',false],['bao',true]]){
-  await page.evaluate(s=>{ localStorage.clear(); window.__yc.setGfx('high'); window.__yc.setTime(0.33);
-    window.__yc.setPlayerPos(0,0); window.__yc.setCam(1); window.__yc.setOrbit(0.30, 11, 0.8);
-    if(s) window.__yc.forceStorm(); }, forceStorm);
-  await page.waitForTimeout(forceStorm?7000:2500); await closeAll();
-  console.log(id, JSON.stringify(await page.evaluate(()=>{
-    const i=window.__yc.rendererInfo();
-    return { calls:i.calls, tri:i.triangles, fps:window.__yc.perf().fps,
-             hud:(document.getElementById('hud-perf')||{}).textContent };
-  })));
-  await page.screenshot({ path:`tests/dust-${id}.png` });
+await page.waitForTimeout(5000);
+for (const veh of ['bike','moto','rover']){
+  const r = await page.evaluate(v=>{ window.__yc.setVehicle(v); return null; }, veh);
+  await page.waitForTimeout(1400);
+  const inv = await page.evaluate(()=>{ const p = window.__yc.player;
+    const seen = new Map(); let mesh=0;
+    p.traverse(o=>{ if(!o.isMesh || !o.material) return; mesh++;
+      const m=o.material; if(seen.has(m.uuid)) return;
+      seen.set(m.uuid, { type:m.type, col: m.color? '#'+m.color.getHexString():null,
+        rough: typeof m.roughness==='number'? +m.roughness.toFixed(2):null,
+        hasRough: 'roughness' in m, emissive: !!(m.emissive && m.emissiveIntensity>0.5),
+        transparent: !!m.transparent, op: m.opacity }); });
+    return { mesh, vatlieu: seen.size, ds: window.__yc.dustInfo(),
+      list:[...seen.values()].map(v=>`${v.type}|${v.col}|r${v.rough}|e${v.emissive?1:0}|t${v.transparent?1:0}`) }; });
+  console.log(`\n== ${veh} ==  mesh=${inv.mesh}  vật liệu khác nhau=${inv.vatlieu}  đã gom bụi=${inv.ds.mats}`);
+  inv.list.slice(0,14).forEach(s=>console.log('   ', s));
 }
-console.log('ERRORS:', errs.length, errs.slice(0,3));
+// ── lái thật, đo bụi; VÀ kiểm tra rò sang vật thể khác ─────────────────────
+console.log('\n── lái 25s, đo bụi ──');
+await page.evaluate(()=>{ window.__yc.setVehicle('rover'); window.__yc.setCam(0); });
+await page.waitForTimeout(1200);
+const truoc = await page.evaluate(()=>{
+  const s = window.__yc.scene; let lm = null;
+  s.traverse(o=>{ if(!lm && o.isMesh && o.material && o.material.type==='MeshPhysicalMaterial'
+     && o.material.color && Math.abs(o.material.color.b-0x2a/255)<0.06
+     && o.parent && o.parent.name && o.parent.name!=='terrainChunks') lm=o; });
+  const p = window.__yc.player; const mau = [];
+  p.traverse(o=>{ if(o.isMesh&&o.material&&o.material.color) mau.push(o.material.uuid); });
+  return { van: new Set(mau).size, mauCongChia: new Set(mau).size };
+});
+console.log('trước:', JSON.stringify(await page.evaluate(()=>window.__yc.dustInfo())));
+await page.keyboard.down('w');
+for (let i=0;i<5;i++){ await page.waitForTimeout(5000);
+  console.log(`  ${(i+1)*5}s`, JSON.stringify(await page.evaluate(()=>window.__yc.dustInfo()))); }
+await page.keyboard.up('w');
+await page.waitForTimeout(1500);
+const sau = await page.evaluate(()=>window.__yc.dustInfo());
+console.log('sau  :', JSON.stringify(sau));
+// VẬT THỂ KHÁC có dùng lại đúng instance vật liệu đó không?
+const chongChia = await page.evaluate(()=>{
+  const p = window.__yc.player, s = window.__yc.scene;
+  const carMats = new Set();
+  p.traverse(o=>{ if(o.isMesh&&o.material) carMats.add(o.material.uuid); });
+  let lan = 0, tong = 0;
+  s.traverse(o=>{ if(o.isMesh && o.material && !carMats.has(o.material.uuid)){
+    tong++; } });
+  return { ngoaiXe: tong, note: 'vật liệu clone chỉ nằm trong player' }; });
+console.log('kiểm tra rò:', JSON.stringify(chongChia));
+await page.screenshot({ path:'tests/t33-bui.png' });
+console.log('\nERRORS:', errs.length, errs.slice(0,3));
 await b.close();
-process.exit(errs.length?1:0);

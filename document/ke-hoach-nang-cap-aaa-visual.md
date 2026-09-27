@@ -175,7 +175,7 @@ Mỗi Phase có Definition of Done + Task nhỏ (2–5 phút/task, TDD khi có l
 **Files:** `app/main.js` (sky/atmosphere), `assets/textures/` (LUT nếu cần)
 **Nội dung:** Sun angle ảnh hưởng bóng/màu/fog; 3–4 preset thời gian (bình minh/trưa/hoàng hôn/đêm) + bão; sky LUT theo biome.
 
-### Task 3.3 — Volumetric-looking lighting + heat haze + dust accumulation
+### Task 3.3 — Volumetric-looking lighting + heat haze + dust accumulation  ✅ 27/09/2026 (art-bible §18)
 **Files:** `app/main.js` (shader, particle)
 **Nội dung:** Sun shafts nhẹ (god rays fake bằng quad + depth), heat haze trên đất nóng, bụi bám trên rover theo quãng đường.
 

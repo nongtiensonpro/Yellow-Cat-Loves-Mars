@@ -150,6 +150,7 @@ let gfxName = (() => {
 // này một lần; giữ nguyên vị trí này.
 let composer = null, renderPass = null, bloomPass = null, fxaaPass = null, gradePass = null;
 let postEnabled = false;
+let hazePass = null, raysPass = null;
 
 function applyGraphicsPreset(name, save){
   if (!GFX_PRESETS[name]) return gfxName;
@@ -1344,6 +1345,10 @@ function updateAtmosphere(dt){
   // Lấy mẫu ở đây để luôn chạy trước khi dùng — không phụ thuộc applyTime()
   // có được gọi hay không (đổi preset đồ họa hay gọi trực tiếp cũng đúng).
   const tg = sampleTimeGrade(timeOfDay);
+  // Task 3.3: cường độ nhiễu nhiệt + cánh nắng theo mốc giờ. Ở đây vì đây đã biết
+  // `tg`; để applyPostFX cấp thì 4 mốc sẽ dùng chung một giá trị cũ.
+  if (hazePass && hazePass.enabled) hazePass.uniforms.uAmount.value = HAZE_BY_TIME[tg.name] ?? 0.5;
+  if (raysPass && raysPass.enabled) raysPass.uniforms.uStrength.value = (RAYS_BY_TIME[tg.name] ?? 0.4) * 0.85;
   // Bão phủ thêm lớp màu bụi mịn lên trên màu biome (tương phản giảm, đỏ lên).
   // Dùng hệ số stormLevel nên bão vẫn chạy trên mọi biome, không phải chỉ vùng storm.
   const s = typeof stormLevel === 'number' ? stormLevel : 0;
@@ -1883,6 +1888,65 @@ function applyMeoSource(useGLB){
 // game không boot được. Thứ tự khai báo quan trọng, không phải thứ tự đọc.
 loadMeoVang();
 
+// ════════════════════════════════════════════════════════════════════════════
+// BỤI BÁM TRÊN XE — Phase 3 Task 3.3 (phần 3)
+//
+// Vấn đề sở hữu: autoMat() CACHE vật liệu theo key và dùng chung giữa các vật thể.
+// Sơn xe, lông mèo và đá landmark cùng lấy từ một cache — nếu ghi thẳng .color
+// để phủ bụi thì MÈO VÀ ĐÁ CŨNG BÁM BỤI theo. Thế nên ở đây clone ra instance
+// riêng cho từng vật liệu trên xe. clone() giữ NGUYÊN tham số nên vẫn dùng
+// chung shader program với bản gốc — không tốn thêm chương trình, chỉ thêm
+// vài lần nạp uniform.
+//
+// Đặc tính: bụi làm mờ màu sơn VÀ tăng nhám (bụi không phản xạ gương), nên
+// chỉ sơn mới bị ảnh hưởng rõ; kim loại và kính gần như không đổi.
+// ════════════════════════════════════════════════════════════════════════════
+const DUST_COLOR = new THREE.Color(0xb08464);   // màu bụi khí quyển
+const _dustMats  = [];                            // {mat, base, baseR, baseC}
+const _dustColor = new THREE.Color();
+let dustLevel = 0;
+
+/** Gom vật liệu trên xe, clone ra instance riêng để phủ bụi an toàn. */
+function collectDustTargets(root){
+  _dustMats.length = 0;
+  const seen = new Set();
+  root.traverse(o=>{
+    if(!o.isMesh || !o.material || Array.isArray(o.material)) return;
+    const m = o.material;
+    if (seen.has(m.uuid)) return;
+    seen.add(m.uuid);
+    // Bỏ qua vật liệu KHÔNG PBR: MeshBasicMaterial (đĩa đổ bóng) không có
+    // roughness, phủ bụi lên nó không có ý nghĩa.
+    if (typeof m.roughness !== 'number') return;
+    // Bỏ qua đèn phát sáng. PHẢI xem MÀU emissive, không được dùng
+    // `if (m.emissive)` — Color là object nên LUÔN truthy, còn emissiveIntensity
+    // mặc định 1.0: cách viết đó loại gần hết 30 vật liệu xe và chỉ còn lại 2.
+    const em = m.emissive;
+    if (em && (em.r + em.g + em.b) > 0.02) return;
+    const c = m.clone();
+    o.material = c;
+    _dustMats.push({ mat:c, base:c.color.clone(), baseR:c.roughness ?? 0.6,
+                     baseC:c.clearcoat ?? 0 });
+  });
+  return _dustMats.length;
+}
+
+/** Cập nhật độ phủ bụi theo quãng đường đã đi. Gọi mỗi khung. */
+function updateDustOnCar(dt){
+  if (!_dustMats.length) return;
+  // 600m là đủ để xe "đã bụi"; bão làm bụi bám nhanh hơn vì bụi mịn lơ lửng.
+  const stormBoost = typeof stormLevel === 'number' ? stormLevel : 0;
+  const target = THREE.MathUtils.clamp((distance + stormBoost*260) / 600, 0, 1);
+  dustLevel += (target - dustLevel) * (1 - Math.exp(-dt*0.35));
+  if (dustLevel < 0.002) return;
+  for (const d of _dustMats){
+    _dustColor.copy(d.base).lerp(DUST_COLOR, dustLevel*0.78);
+    d.mat.color.copy(_dustColor);
+    d.mat.roughness = Math.min(1, d.baseR + dustLevel*0.42);
+    if (d.baseC) d.mat.clearcoat = Math.max(0, d.baseC*(1 - dustLevel*0.85));
+  }
+}
+
 function buildVehicle(type){
   while(player.children.length) player.remove(player.children[0]);
   // KHÔNG gán lại vRefs: mọi ref đã push vào object cũ, gán lại sẽ làm rỗng
@@ -2373,6 +2437,10 @@ fillLight.layers.set(1);
   // thứ tự gọi so với markFar(scene) — nếu quên, xe sẽ thành mảng tối vì
   // không nguồn ánh sáng nào chiếu layer 0.
   g.traverse(o=>{ if(o.isMesh||o.isInstancedMesh||o.isPoints||o.isLine) o.layers.enable(1); });
+  // Gom vật liệu để phủ bụi (Task 3.3). PHẢI làm trước auto-calibrate vì hàm đó
+  // đo world matrix của bánh — không liên quan, nhưng clone vật liệu không đổi
+  // hình học nên thứ tự vẫn an toàn. Đặt sau cùng để mọi mesh đã dựng xong.
+  const nDust = collectDustTargets(g);
   player.add(g);
 
   // ---- AUTO-CALIBRATE ride height --------------------------------------
@@ -3671,6 +3739,7 @@ function frame(now){
   if(++_chunkTick % 6 === 0) updateChunkLOD();
 
   updateDust(dt, stormLevel, Math.min(1, speedKmh/55), atmoDust);
+  updateDustOnCar(dt);          // Task 3.3: bụi bám trên sơn theo quãng đường
 
   // Phase 3: POI discovery
   if(!overlayDiscovery.classList.contains('hidden')===false){
@@ -3698,6 +3767,9 @@ function frame(now){
   if (postEnabled && composer) composer.render(dt);
   else renderer.render(scene, camera);
   if (gradePass) gradePass.uniforms.uTime.value = now * 0.001;
+  // Task 3.3: nhiễu nhiệt + cánh nắng
+  if (hazePass && hazePass.enabled) hazePass.uniforms.uTime.value = now * 0.001;
+  updateSunScreen();
 }
 
 // ---------- Resize ----------
@@ -3798,6 +3870,109 @@ const GradeShader = {
 };
 
 
+// ════════════════════════════════════════════════════════════════════════════
+// NHIỄU NHIỆT + CÁNH NẮNG — Phase 3 Task 3.3
+//
+// Cả hai đều là pass toàn màn hình, nên chúng nằm trong composer sẵn có thay vì
+// thêm mesh vào scene (mesh sẽ tốn draw call và không thuận khi camera xoay).
+//
+// NHIỄU NHIỆT: trên Sao Hỏa, khí gần mặt đất nóng nhất nên không khí phía trên
+// rung. Hiệu ứng chỉ nên xuất hiện ở vùng THẤP khung hình (gần chân người chơi)
+// và mạnh nhất khi trời nắng — ban đêm phải sạch tuyệt đối.
+//
+// CÁNH NẮNG: kỹ thuật volumetric scattering của Kenny Mitchell — lấy phần
+// sáng của cảnh rồi làm nhòe từ hướng vị trí mặt trời trên màn hình, cộng dồn
+// lại. Rẻ hơn nhiều so vì dựng thể tích thật, và đúng những gì cần cho cảnh.
+//
+// CẢ HAI đều cần một lượng uAmount/uStrength do updateAtmosphere() cấp dựa trên
+// mốc giờ (Task 3.2) — chúng KHÔNG tự tính "nắng mạnh hay yếu".
+// ════════════════════════════════════════════════════════════════════════════
+
+const HeatHazeShader = {
+  uniforms: {
+    tDiffuse:{ value:null },
+    uTime:   { value: 0 },
+    uAmount: { value: 0 },      // 0 = sạch, ~1 = rung rõ
+    uBand:   { value: 0.62 },    // trên vUv.y này là không rung (chỉ vùng sát đất)
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }
+  `,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform float uTime, uAmount, uBand;
+    varying vec2 vUv;
+    void main(){
+      // Chỉ vùng sát đất rung. Mượt cả hai đầu để không thấy mép ngang.
+      float band = 1.0 - smoothstep(uBand*0.28, uBand, vUv.y);
+      if (band <= 0.001 || uAmount <= 0.001){
+        gl_FragColor = texture2D(tDiffuse, vUv);
+        return;
+      }
+      float t = uTime;
+      // Hai tần số lệch pha: tần thấp cho cơn chớp, tần cao cho vi lăn vặn
+      float n1 = sin(vUv.x*34.0 + t*1.6) * cos(vUv.y*21.0 - t*1.05);
+      float n2 = sin(vUv.x*79.0 - t*2.4) * cos(vUv.y*57.0 + t*1.8);
+      float n  = n1 + 0.45*n2;
+      // Biên độ tăng dần về gần chân khung — chỗ "chân trời" ổn định nhất
+      float amp = uAmount * band * band;
+      vec2 off = vec2(n*0.0022, n*0.0013) * amp;
+      // Lấy mẫu 2 lần, lệch nhẹ theo chiều dọc để dày không "đứng yên"
+      vec3 c = texture2D(tDiffuse, vUv + off).rgb;
+      c = mix(c, texture2D(tDiffuse, vUv + off*0.45).rgb, 0.5);
+      gl_FragColor = vec4(c, 1.0);
+    }
+  `,
+};
+
+const GodRaysShader = {
+  uniforms: {
+    tDiffuse:  { value:null },
+    uSunUV:    { value:null },   // vị trí mặt trời ở toạ độ màn hình, set mỗi khung
+    uSunVis:   { value:0 },      // 0 = mặt trời sau lưng/ngoài khung -> tắt hẳn
+    uStrength: { value:0 },
+    uDensity:  { value:0.62 },
+    uDecay:    { value:0.955 },
+    uThreshold:{ value:0.72 },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }
+  `,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform vec2  uSunUV;
+    uniform float uSunVis, uStrength, uDensity, uDecay, uThreshold;
+    varying vec2 vUv;
+    const int RAY_SAMPLES = 20;
+    void main(){
+      vec3 scene = texture2D(tDiffuse, vUv).rgb;
+      if (uSunVis <= 0.001 || uStrength <= 0.001){
+        gl_FragColor = vec4(scene, 1.0);
+        return;
+      }
+      // Bước lùi từ điểm ảnh về phía mặt trời: đoạn thẳng mỗi điểm tạo một vệt
+      vec2 delta = (vUv - uSunUV) * (uDensity / float(RAY_SAMPLES));
+      vec2 coord = vUv;
+      float illum = 1.0;
+      vec3 rays  = vec3(0.0);
+      for (int i = 0; i < RAY_SAMPLES; i++){
+        coord -= delta;
+        vec2 s = clamp(coord, vec2(0.0), vec2(1.0));
+        vec3 c = texture2D(tDiffuse, s).rgb;
+        // CHỈ lấy phần sáng. Lấy cả vùng tối thì cả khung hình bị nhoè mờ.
+        float l = max(0.0, dot(c, vec3(0.2126,0.7152,0.0722)) - uThreshold);
+        c *= smoothstep(0.0, 0.42, l);
+        rays += c * illum * illum;
+        illum *= uDecay;
+      }
+      rays *= uStrength / float(RAY_SAMPLES);
+      gl_FragColor = vec4(scene + rays, 1.0);
+    }
+  `,
+};
+
 function initPostFX(){
   if (composer) return;
   composer = new EffectComposer(renderer);
@@ -3809,10 +3984,45 @@ function initPostFX(){
   composer.addPass(fxaaPass);
   gradePass = new ShaderPass(GradeShader);
   composer.addPass(gradePass);
+  // Task 3.3. Thứ tự: grade -> haze -> rays -> output. Haze và rays cộng vào
+  // ảnh ĐÃ tone-map, nên đặt sau grade để chúng không bị grade nén lại.
+  hazePass = new ShaderPass(HeatHazeShader);
+  composer.addPass(hazePass);
+  raysPass = new ShaderPass(GodRaysShader);
+  raysPass.uniforms.uSunUV.value = new THREE.Vector2(0.5, 0.5);
+  composer.addPass(raysPass);
   composer.addPass(new OutputPass());
 }
 
 /** Bật/tắt từng pass theo preset. low -> không post gì, render thẳng. */
+// ── Task 3.3: cấp cường độ cho haze + rays, và vị trí mặt trời trên màn hình ──
+// Cảnh Sao Hỏa: bụi khí quyển mỏng nhưng ĐẶC. Cánh nắng rõ nhất khi mặt trời
+// thấp (bình minh / hoàng hôn) — đúng lúc người chơi hay dừng lại ngắm cảnh.
+// Đêm phải tắt hẳn, nếu không vệt sáng sẽ hiện trên nền tối và trông như lỗi.
+const RAYS_BY_TIME = { 'Đêm':0.00, 'Bình minh':1.00, 'Trưa':0.45, 'Hoàng hôn':1.00 };
+const HAZE_BY_TIME = { 'Đêm':0.00, 'Bình minh':0.55, 'Trưa':0.85, 'Hoàng hôn':0.70 };
+const _sunNDC = new THREE.Vector3();
+let _sunScreen = { x:0, y:0, z:0, vis:0 };   // chỉ để probe đọc
+
+/** Vị trí mặt trời trên màn hình (0..1) + mức nhìn thấy. Gọi mỗi khung. */
+function updateSunScreen(){
+  if (!raysPass || !raysPass.enabled) return;
+  _sunNDC.copy(sun.position).project(camera);
+  // z > 1 = nằm sau mặt phẳng camera; w<=0 là phía sau lưng
+  const behind = _sunNDC.z > 1;
+  const uv = raysPass.uniforms.uSunUV.value;
+  uv.set(_sunNDC.x*0.5 + 0.5, _sunNDC.y*0.5 + 0.5);
+  // Mặt trời lọt ra ngoài khung vẫn để vệt chạy vào từ mép — chỉ tắt khi
+  // thực sự ở sau lưng, vì tắt sớm sẽ làm vệt bật/tắt khi xoay camera.
+  // Mặt trời lọt ra ngoài khung VẪN để vệt chạy vào từ mép — chỉ tắt khi thực sự
+  // ở sau lưng. Tắt sớm làm vệt bật/tắt chớp nhoè mỗi lần xoay camera.
+  const inFront = !behind;
+  const dist = Math.hypot(uv.x - 0.5, uv.y - 0.5);
+  raysPass.uniforms.uSunVis.value = (inFront && dist < 1.7) ? 1 : 0;
+  raysPass.uniforms.uSunUV.value.set(uv.x, uv.y);
+  _sunScreen = { x:+uv.x.toFixed(3), y:+uv.y.toFixed(3), z:+_sunNDC.z.toFixed(2), vis:raysPass.uniforms.uSunVis.value };
+}
+
 function applyPostFX(gfxName){
   const level = { low:0, medium:1, high:2, cinematic:3 }[gfxName] ?? 1;
   postEnabled = level > 0;
@@ -3828,6 +4038,13 @@ function applyPostFX(gfxName){
     const pr = renderer.getPixelRatio();
     fxaaPass.material.uniforms.resolution.value.set(1/(innerWidth*pr), 1/(innerHeight*pr));
   }
+  // Task 3.3: nhiễu nhiệt từ `high` trở lên; cánh nắng chỉ ở `cinematic` vì
+  // 20 vòng lấy mẫu mỗi pixel là pass đắt nhất trong chuỗi.
+  hazePass.enabled = level >= 2;
+  raysPass.enabled = level >= 3;
+  // KHÔNG cấp giá trị uAmount/uStrength ở đây: applyPostFX chỉ chạy khi ĐỔI PRESET,
+  // còn giờ trong ngày thì đổi liên tục — cấp ở đây nghĩa là 4 mốc giờ dùng chung
+  // một cường độ. Giá trị do updateAtmosphere() cấp mỗi khung (dòng dưới).
   return true;
 }
 
@@ -3906,6 +4123,15 @@ window.__yc={ THREE, scene, player, camera, renderer, BIOMES, POIS, heightAt, sa
   // file đã khai báo chúng là OBJECT, và gán sau sẽ đè lên hàm → probes cũ
   // đọc __yc.renderer.info là undefined. Chỉ thêm tên chưa có.
   composer:()=>composer, postFXOn:()=>postEnabled, HF:()=>HF,
+  sunScreen:()=>_sunScreen,
+  setDust(v){ dustLevel = THREE.MathUtils.clamp(v,0,1); return dustLevel; },
+  dustInfo(){ const d=_dustMats[0];
+    const num = v => (typeof v === 'number' && isFinite(v)) ? +v.toFixed(3) : null;
+    return { level:num(dustLevel), mats:_dustMats.length, distance:num(distance),
+      mauDau: d&&d.base?'#'+d.base.getHexString():null,
+      mauNay: d&&d.mat&&d.mat.color?'#'+d.mat.color.getHexString():null,
+      roughDau: d?num(d.baseR):null, roughNay: d&&d.mat?num(d.mat.roughness):null,
+      kieu: d? (d.mat?d.mat.type:'no-mat') : 'no-target' }; },
   chunkInfo(){ const s=updateChunkLOD();
     return { chunks:terrainChunks.length, visible:s.vis, tris:s.tris,
              lodSegs:CHUNK_LOD_SEG.slice(), dists:CHUNK_LOD_DIST.slice(),
