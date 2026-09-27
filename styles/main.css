@@ -193,3 +193,11 @@ a{color:inherit}
 .loader p{color:var(--muted);font-size:13px;margin:8px 0 16px}
 .bar{height:8px;background:rgba(255,255,255,0.08);border-radius:999px;overflow:hidden;border:1px solid rgba(255,255,255,0.08)}
 .bar i{display:block;height:100%;width:0%;background:linear-gradient(90deg, var(--accent), var(--accent-2));transition:width 0.3s}
+
+/* ---- GFX preset HUD (Task 0.4) ---- */
+#hud-perf-pill{ font-family:'JetBrains Mono',monospace; cursor:default; }
+#hud-perf-pill select, #gfx-select{ color:#ff9a5c; }
+#hud-perf-pill option{ background:#1a0f0a; color:#ff9a5c; }
+/* Ẩn số đo hiệu năng mặc định để không chồng cảnh; bật bằng documentElement.dataset.perf='1' */
+#hud-perf-pill{ display:none; }
+html[data-perf="1"] #hud-perf-pill{ display:inline-flex; }

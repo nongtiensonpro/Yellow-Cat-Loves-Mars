@@ -42,6 +42,15 @@
       <div class="pill"><span class="dot"></span> <span><b id="hud-biome">Arcadia Planitia</b> · <span id="hud-coord">0, 0</span></span></div>
       <div class="pill">🐾 <b id="hud-paws">0</b> <span style="color:var(--muted)">Dấu chân</span> &nbsp;·&nbsp; <span id="hud-speed">0</span> km/h</div>
       <div class="pill" id="hud-vehicle-pill">🚙 <span id="hud-vehicle-name">Rover</span></div>
+      <div class="pill" id="hud-perf-pill" title="Số đo hiệu năng (Task 0.4)"><span id="hud-perf" style="font-family:'JetBrains Mono',monospace;font-size:11px">— FPS</span></div>
+      <label class="pill" title="Preset đồ họa (Task 0.4 / art-bible.md §7)">🎨
+        <select id="gfx-select" style="background:transparent;border:none;color:#ff9a5c;font:inherit;cursor:pointer;outline:none">
+          <option value="low">Thấp</option>
+          <option value="medium">Vừa</option>
+          <option value="high">Cao</option>
+          <option value="cinematic">Điện ảnh</option>
+        </select>
+      </label>
       <div class="pill" id="hud-storm" style="display:none;background:rgba(120,40,10,0.7);border-color:rgba(255,154,92,0.45)">🌪️ Bão bụi: <b>&nbsp;</b></div>
     </div>
     <div class="minimap-wrap" id="minimap-wrap" title="Bản đồ quỹ đạo — click để thu phóng">

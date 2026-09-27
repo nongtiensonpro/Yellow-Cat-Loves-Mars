@@ -7,3 +7,6 @@ verify-out/
 
 assets/textures/_src_*.jpg
 preview-*.log
+tests/perf-latest.json
+tests/_prev.log
+tests/*.log

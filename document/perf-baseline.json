@@ -1,0 +1,34 @@
+{
+  "url": "http://127.0.0.1:4173/",
+  "viewport": "1920x1080",
+  "seconds": 12,
+  "frames": 1016,
+  "fpsAvg": 84.6,
+  "fpsP95Worst": 71.4,
+  "frameMsAvg": 11.82,
+  "frameMsP95": 14,
+  "frameMsMax": 34.7,
+  "renderer": {
+    "drawCalls": 195,
+    "triangles": 97516,
+    "lines": 0,
+    "points": 3100,
+    "geometries": 198,
+    "textures": 2,
+    "programs": 13,
+    "pixelRatio": 1,
+    "size": [
+      1920,
+      1080
+    ]
+  },
+  "errors": 0,
+  "errorSample": [],
+  "note": "Baseline Giai doan 0.5 (trước nâng cấp AAA), 1920x1080, headless Edge + SwiftShader. Đây là MỐC SO SÁNH: mọi Phase sau không được vượt ngưỡng trong art-bible.md §7 (60 FPS desktop, <16.6ms frame).",
+  "budget": {
+    "fpsDesktop": 60,
+    "frameMsDesktop": 16.6,
+    "drawCallsWarn": 400,
+    "trianglesWarn": 1200000
+  }
+}

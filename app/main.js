@@ -98,8 +98,74 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
 
+// ════════════════════════════════════════════════════════════════════════════
+// GFX PRESET — chất lượng đồ họa theo thiết bị (Task 0.4 / art-bible.md §7)
+// Mỗi preset là một bộ thông số tường minh, lưu cục bộ, đổi được lúc chơi.
+// Ngưỡng: Desktop 60 FPS @1080p High · Mobile 30–45 FPS, renderScale 0.7–0.9.
+// ════════════════════════════════════════════════════════════════════════════
+const GFX_PRESETS = {
+  low:       { label:'Thấp',    renderScale:0.70, shadow:0,    fogMul:1.60, dust:0.35, stars:false },
+  medium:    { label:'Vừa',     renderScale:0.90, shadow:1024, fogMul:1.15, dust:0.70, stars:true  },
+  high:      { label:'Cao',     renderScale:1.00, shadow:2048, fogMul:1.00, dust:1.00, stars:true  },
+  cinematic: { label:'Điện ảnh',renderScale:1.00, shadow:4096, fogMul:0.80, dust:1.60, stars:true  },
+};
+let gfxDustMul = 1;          // hệ số bụi theo preset (frame loop nhân vào opacity)
+let gfxShadowOn = true;      // trạng thái shadow thực tế sau khi áp preset
+let gfxName = (() => {
+  const saved = localStorage.getItem(STORAGE_KEY+'_gfx');
+  if (saved && GFX_PRESETS[saved]) return saved;
+  // Tự chọn theo thiết bị: màn nhỏ hoặc thiết bị yếu -> thấp.
+  const small = Math.min(innerWidth, innerHeight) < 620;
+  const cores = navigator.hardwareConcurrency || 4;
+  return (small || cores <= 4) ? 'low' : 'high';
+})();
+
+// Áp dụng preset. Gọi lại an toàn nhiều lần (đổi preset lúc chạy).
+function applyGraphicsPreset(name, save){
+  if (!GFX_PRESETS[name]) return gfxName;
+  gfxName = name;
+  const g = GFX_PRESETS[name];
+  const target = g.renderScale * Math.min(devicePixelRatio, 2);
+  renderer.setPixelRatio(target);
+  renderer.setSize(innerWidth, innerHeight, false);
+  // Shadow: 0 = tắt hoàn toàn (tiết kiệm lớn nhất trên mobile)
+  const wantShadow = g.shadow > 0;
+  const wasShadow = renderer.shadowMap.enabled;
+  renderer.shadowMap.enabled = wantShadow;
+  if (wantShadow) {
+    sun.shadow.mapSize.set(g.shadow, g.shadow);
+    if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
+  }
+  sun.castShadow = wantShadow;
+  gfxShadowOn = wantShadow;
+  // ĐỔI shadowMap.enabled lúc chạy BẮT BUỘC phải yêu cầu vật liệu biên dịch lại,
+  // nếu không shader vẫn giả định có shadow → hiển thị sai (thiếu bóng/đủ bóng
+  // theo trạng thái cũ). Đây là bẫy kinh điển của Three.js.
+  if (wasShadow !== wantShadow) {
+    scene.traverse((o) => {
+      const m = o.material;
+      if (!m) return;
+      if (Array.isArray(m)) m.forEach((x) => { x.needsUpdate = true; });
+      else m.needsUpdate = true;
+    });
+  }
+  scene.fog.density = FOG_BASE * g.fogMul;
+  // Bụi và sao do frame loop ghi opacity mỗi khung hình, nên preset chỉ đặt
+  // HỆ SỐ nhân (dustMul/starMul) — không ghi thẳng opacity (sẽ bị ghi đè).
+  gfxDustMul = g.dust;
+  dustPoints.visible = g.dust > 0;
+  stars.visible = g.stars;
+  document.documentElement.dataset.gfx = name;
+  if (save !== false) { try { localStorage.setItem(STORAGE_KEY+'_gfx', name); } catch {} }
+  const sel = document.getElementById('gfx-select');
+  if (sel && sel.value !== name) sel.value = name;
+  return gfxName;
+}
+
+
 const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0x2a140a, 0.0012);
+const FOG_BASE = 0.0012;
+scene.fog = new THREE.FogExp2(0x2a140a, FOG_BASE);
 
 const camera = new THREE.PerspectiveCamera(68, innerWidth/innerHeight, 0.1, 3000);
 const camTarget = new THREE.Vector3();
@@ -2000,6 +2066,7 @@ function updateJournalPhase3(){
 function frame(now){
   requestAnimationFrame(frame);
   const dt=Math.min(0.033, (now-lastT)/1000); lastT=now;
+  updatePerfHud(dt);
 
   // ══════ MOVEMENT (sửa xuyên địa hình) ══════
   const conf=VEHICLES[vehicleType];
@@ -2144,7 +2211,7 @@ function frame(now){
   drawMini();
   // dust
   const isStorm = bi.id==='storm';
-  dustMat.opacity = THREE.MathUtils.clamp( (isStorm?0.42:0.0) + Math.min(0.35, speedKmh/70) + stormLevel*0.5, 0, 0.95);
+  dustMat.opacity = gfxDustMul * THREE.MathUtils.clamp( (isStorm?0.42:0.0) + Math.min(0.35, speedKmh/70) + stormLevel*0.5, 0, 0.95);
   const dpos=dustGeo.attributes.position;
   for(let i=0;i<dustCount;i++){
     let x=dpos.getX(i), y=dpos.getY(i), z=dpos.getZ(i);
@@ -2218,10 +2285,42 @@ const loadIv=setInterval(()=>{
 }, 55);
 loadText.textContent='Đang dựng đồng bằng Arcadia và đánh thức Mèo Vàng...';
 
+// ═══ Áp preset đồ họa (gọi sau khi sun/dust/stars đã có) ═══
+applyGraphicsPreset(gfxName, false);
+
+// HUD: chọn preset + số đo hiệu năng
+const gfxSel = document.getElementById('gfx-select');
+if (gfxSel) {
+  gfxSel.value = gfxName;
+  gfxSel.addEventListener('change', () => {
+    const n = applyGraphicsPreset(gfxSel.value, true);
+    showToast('🎨', 'Đồ họa: ' + GFX_PRESETS[n].label, 'Đã áp dụng preset ' + n);
+  });
+}
+const perfEl = document.getElementById('hud-perf');
+let perfAcc = 0, perfFrames = 0, perfFps = 0;
+function updatePerfHud(dt){
+  if (!perfEl) return;
+  perfAcc += dt; perfFrames++;
+  if (perfAcc < 0.5) return;
+  perfFps = Math.round(perfFrames / perfAcc);
+  perfAcc = 0; perfFrames = 0;
+  const i = renderer.info.render;
+  perfEl.textContent = perfFps + ' FPS · ' + i.calls + ' draw · ' +
+                        Math.round(i.triangles/1000) + 'k tri · ' + gfxName;
+}
+
 // expose for debug
 window.__yc={ scene, player, camera, renderer, BIOMES, POIS, heightAt, sampleHeight, slopeAt, discovered, VEHICLES, setPlayerPos(x,z){ playerPos.x=x; playerPos.z=z; playerPos.y=sampleHeight(x,z)+VEHICLES[vehicleType].ride; settleToGround(); player.position.copy(playerPos); player.rotation.set(targetPitch, -playerYaw, targetRoll, 'YXZ'); player.updateMatrixWorld(true); },
   setVehicle(t){ setVehicle(t); },
   setCam(m){ camMode=m; },
+  GFX_PRESETS, gfx: ()=>gfxName,
+  setGfx(n){ return applyGraphicsPreset(n, true); },
+  perf(){ return { fps:perfFps, ...renderer.info.render, gfx:gfxName,
+                   pixelRatio:renderer.getPixelRatio(),
+                   shadow: gfxShadowOn ? sun.shadow.mapSize.width : 0,
+                   shadowMapEnabled: renderer.shadowMap.enabled,
+                   fogDensity: scene.fog.density, dustMul: gfxDustMul }; },
   poseInfo(){ return { camMode, steerVis:+steerVis.toFixed(3), arms: vRefs.arms?vRefs.arms.length:0, bar: vRefs.barPos||null, bodyLift: BODY_LIFT }; },
   handWorld(){ player.updateMatrixWorld(true);
     return (vRefs.arms||[]).map(a=>{ const v=new THREE.Vector3(); a.wrist.getWorldPosition(v);
