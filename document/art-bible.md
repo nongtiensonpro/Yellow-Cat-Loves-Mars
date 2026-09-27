@@ -219,3 +219,28 @@ ngang tối** — đúng lỗi review chỉ ra.
 
 **Quy tắc:** bất kỳ thay đổi nào ở fog/sky phải kiểm bằng ảnh chụp ở **3 khoảng
 cách** (gần / 100 m / 400 m) — nếu thấy đường ngang ở chân trời là hỏng.
+
+## 11. Material đất — vì sao phải có normal map (sửa 27/09/2026)
+
+Bản cũ chỉ có `vertexColors` + albedo 256². **Không có normal map thì bề mặt
+không đổi sắc độ theo hướng ánh sáng** → đọc như một mặt phẳng, đúng lỗi
+"mặt phẳng procedural trống". Thêm normal map là thay đổi tác động lớn nhất
+trên mặt đất.
+
+Ba map sinh từ **cùng một trường cao fbm** (tất định, không `Math.random()`):
+
+| Map | Công thức | Giá trị |
+|---|---|---|
+| normal | gradient trường cao × `STRENGTH` | 512², repeat 60 (≈22 px/m), normalScale 1.00 |
+| albedo | cát + vệt gió + mảng lớn | `0.90 + h*0.24` |
+| roughness | biến thiên theo độ cao cục bộ | 0.59 – 0.85 |
+
+**Quy tắc:**
+- `roughness` của material đặt **1.0** để `roughnessMap` chi phối, không đặt 0.92
+  cứng (khi đó map bị bóp).
+- `STRENGTH` **không vượt 1.75**. Thử 2.35 → mặt đất thành *vũng bùn* vì bóng
+  đổ trên normal map quá tương phản, giảm sáng trung bình của cả mặt đất.
+- Vân sóng gió **phải domain-warp** trước khi lấy `sin`. Không warp thì các vân
+  song song đều tăm tắp, lặp theo tile và nhìn rõ là hoa văn nhân tạo khi lái xa.
+- Kiểm bằng ảnh ở **3 khoảng cách** (3 m / 8 m / 11 m) — normal map chỉ thấy
+  được gần, xa sẽ dày đặc thành nhiễu.

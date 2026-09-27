@@ -441,38 +441,120 @@ for(let i=0;i<posAttr.count;i++){
 }
 terrainGeo.setAttribute('color', new THREE.BufferAttribute(colors,3));
 
-const albedoTex = (()=>{
-  const c=document.createElement('canvas'); c.width=c.height=256;
-  const g=c.getContext('2d');
-  g.fillStyle='#ffffff'; g.fillRect(0,0,256,256);
-  // sand grains
-  const img=g.getImageData(0,0,256,256); const dd=img.data;
-  for(let i=0;i<dd.length;i+=4){
-    const n = 215 + Math.random()*40;
-    dd[i]=n; dd[i+1]=n*0.98; dd[i+2]=n*0.94;
+// ════════════════════════════════════════════════════════════════════════════
+// BỘ MAP THỦ TỤC CHO ĐẤT — Giai đoạn 1 P0 Task 1.4
+//
+// Vấn đề gốc: terrain chỉ có vertexColors + albedo 256², KHÔNG có normal map.
+// Không có normal map thì bề mặt không đổi sắc độ theo hướng ánh sáng → đọc
+// như một mặt phẳng, đúng lỗi "mặt phẳng procedural trống" mà review nêu.
+// Nay sinh 3 map từ CÙNG một trường cao fbm (tất định, không Math.random):
+//   • normal  — cho ánh sáng vi tế, đây là thứ giúp đất "có bề mặt"
+//   • albedo  — cát cơ bản + vệt sóng gió + đốm sỏi, lấy từ độ cao
+//   • rough   — biến thiên độ nhám, vùng gió mạnh thì bóng hơn
+// Mọi thứ tile được (RepeatWrapping) nên không lộ tile khi lái xa.
+// ════════════════════════════════════════════════════════════════════════════
+const TERR_N = 512;                       // 512² ≈ 22px/m khi repeat 60
+function terrHash(x, y, s){
+  let h = x*374761393 + y*668265263 + s*1442695040888963407;
+  h = (h ^ (h >> 13)) * 1274126177;
+  return ((h ^ (h >> 16)) >>> 0) / 4294967296;
+}
+function terrNoise(x, y, s){               // value noise + nội suy mượt
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const u = xf*xf*(3-2*xf), v = yf*yf*(3-2*yf);
+  const a = terrHash(xi, yi, s),     b = terrHash(xi+1, yi, s);
+  const c = terrHash(xi, yi+1, s),   d = terrHash(xi+1, yi+1, s);
+  return (a*(1-u)+b*u)*(1-v) + (c*(1-u)+d*u)*v;
+}
+function terrFbm(x, y, oct){
+  let sum = 0, amp = 1, freq = 1, norm = 0;
+  for (let i=0;i<oct;i++){
+    sum += terrNoise(x*freq, y*freq, 7+i*13) * amp;
+    norm += amp; amp *= 0.5; freq *= 2.07;
   }
-  g.putImageData(img,0,0);
-  // wind ripples
-  g.globalAlpha=0.10; g.strokeStyle='#7a3d1a';
-  for(let i=0;i<26;i++){
-    g.beginPath();
-    const y0=Math.random()*256;
-    g.moveTo(0,y0);
-    for(let x=0;x<=256;x+=16) g.lineTo(x, y0 + Math.sin(x*0.05+i)*5);
-    g.stroke();
+  return sum / norm;                       // 0..1
+}
+// Trường cao: hạt cát tần số cao + vệt sóng gió + mảng lớn.
+// Vệt gió được DOMAIN WARP trước khi lấy sin: nếu không, các vân song song
+// đều tăm tắp lặp theo tile và nhìn rõ "vân sọc" nhân tạo khi lái xa.
+function terrHeight(x, y){
+  const grain = terrFbm(x*0.42, y*0.42, 3);              // hạt cát
+  // warp: dịch pha (và cả toạ độ) theo fbm tần số thấp
+  const wx = terrFbm(x*0.021, y*0.021, 2) - 0.5;
+  const wy = terrFbm(x*0.021+31.7, y*0.021-11.3, 2) - 0.5;
+  const rx = x + wx*46 + wy*9;                            // vệt uốn lượn
+  const ripple = 0.5 + 0.5*Math.sin(rx*0.38 + wy*5.0 + terrFbm(x*0.06, y*0.06, 2)*4.0);
+  const patch = terrFbm(x*0.035, y*0.035, 3);             // mảng lớn
+  return grain*0.42 + ripple*0.16 + patch*0.42;
+}
+
+const terrMaps = (()=>{
+  // --- 1. trường cao (dùng chung cho cả 3 map) ---
+  const H = new Float32Array(TERR_N*TERR_N);
+  for (let y=0;y<TERR_N;y++)
+    for (let x=0;x<TERR_N;x++)
+      H[y*TERR_N+x] = terrHeight(x, y);
+
+  const cA = document.createElement('canvas'); cA.width=cA.height=TERR_N;
+  const gA = cA.getContext('2d');
+  const iA = gA.createImageData(TERR_N, TERR_N), dA = iA.data;
+
+  const cR = document.createElement('canvas'); cR.width=cR.height=TERR_N;
+  const gR = cR.getContext('2d');
+  const iR = gR.createImageData(TERR_N, TERR_N), dR = iR.data;
+
+  const cN = document.createElement('canvas'); cN.width=cN.height=TERR_N;
+  const gN = cN.getContext('2d');
+  const iN = gN.createImageData(TERR_N, TERR_N), dN = iN.data;
+
+  const at = (x,y)=> H[((y+TERR_N)%TERR_N)*TERR_N + ((x+TERR_N)%TERR_N)];
+  const STRENGTH = 1.75;   // cường độ nện (bump) — quá cao thì đất thành vũng bùn
+  for (let y=0;y<TERR_N;y++){
+    for (let x=0;x<TERR_N;x++){
+      const k = y*TERR_N+x, o = k*4;
+      const h = H[k];
+      // ---- albedo: cát sáng, mảng tối theo patch, lấm tấm sỏi ----
+      const v = 0.90 + h*0.24;
+      dA[o  ] = Math.min(255, 255*v);
+      dA[o+1] = Math.min(255, 250*v);     // hơi ấm
+      dA[o+2] = Math.min(255, 240*v*0.96);// bớt xanh
+      dA[o+3] = 255;
+      // ---- roughness: chỗ thấp (bụi lắng) nhám hơn, chỗ cao bóng hơn ----
+      const rg = 216 - h*66;              // ~0.85 .. ~0.59
+      dR[o]=dR[o+1]=dR[o+2]=rg; dR[o+3]=255;
+      // ---- normal map: gradient của trường cao (OpenGL: +Y lên) ----
+      const dx = (at(x+1,y) - at(x-1,y)) * STRENGTH;
+      const dy = (at(x,y+1) - at(x,y-1)) * STRENGTH;
+      let nx = -dx, ny = -dy, nz = 1.0;
+      const len = Math.hypot(nx,ny,nz);
+      nx/=len; ny/=len; nz/=len;
+      dN[o  ] = (nx*0.5+0.5)*255;
+      dN[o+1] = (ny*0.5+0.5)*255;
+      dN[o+2] = (nz*0.5+0.5)*255;
+      dN[o+3] = 255;
+    }
   }
-  // pebble speckles
-  g.globalAlpha=0.16;
-  for(let i=0;i<130;i++){
-    g.fillStyle='#5a2d14';
-    g.fillRect(Math.random()*256, Math.random()*256, 1+Math.random()*2, 1+Math.random()*2);
-  }
-  const t=new THREE.CanvasTexture(c);
-  t.wrapS=t.wrapT=THREE.RepeatWrapping; t.repeat.set(90,90);
-  t.colorSpace = THREE.SRGBColorSpace;
-  return t;
+  gA.putImageData(iA,0,0); gR.putImageData(iR,0,0); gN.putImageData(iN,0,0);
+
+  const mk = (cv, srgb, rep)=>{
+    const t = new THREE.CanvasTexture(cv);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(rep, rep);
+    t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  };
+  return { albedo: mk(cA, true, 60), rough: mk(cR, false, 60), normal: mk(cN, false, 60) };
 })();
-const terrainMat = new THREE.MeshStandardMaterial({ vertexColors:true, map:albedoTex, roughness:0.92, metalness:0.02 });
+const albedoTex = terrMaps.albedo;
+
+const terrainMat = new THREE.MeshStandardMaterial({
+  vertexColors:true, map:albedoTex,
+  normalMap: terrMaps.normal, normalScale: new THREE.Vector2(1.00, 1.00),
+  roughnessMap: terrMaps.rough, roughness: 1.0,   // 1.0 để roughnessMap chi phối (0.59–0.85)
+  metalness:0.02,
+});
 const terrain = new THREE.Mesh(terrainGeo, terrainMat);
 terrain.receiveShadow=true;
 scene.add(terrain);
@@ -2317,6 +2399,15 @@ function frame(now){
   const boost = input.boost ? 1.6 : 1;
   const speed = fwd * conf.speed * boost;
   speedKmh = Math.abs(speed*3.2);
+  // ── HUD gọn khi lái (Task 1.5) ──
+  // Đang di chuyển → ẩn gợi ý phím, thanh công cụ, bộ chọn phương tiện, pill
+  // hiệu năng; chỉ giữ biome/tọa độ/tốc độ/minimap. Trễ 1.2s khi dừng để HUD
+  // không nhấp nháy khi chạm phím rồi buông.
+  const driving = fwd !== 0 || speedKmh > 1.5;
+  hudIdleT = driving ? 0 : hudIdleT + dt;
+  const wantCompact = driving || hudIdleT < 1.2;
+  if (wantCompact !== hudDriveOn){ hudDriveOn = wantCompact; applyHudDriveMode(hudDriveOn); }
+
 
   if(Math.abs(speed)>0.01){
     playerYaw += turn * conf.turn * dt * (speed>0?1:-1) * (Math.abs(speed)/conf.speed*0.9+0.2);
@@ -2537,6 +2628,16 @@ if (gfxSel) {
   });
 }
 const perfEl = document.getElementById('hud-perf');
+// Trạng thái HUD: gọn (đang lái) / đầy (đứng yên)
+let hudDriveOn = false, hudIdleT = 99;
+const HUD_HIDE_SEL = ['#hud-hint', '#hud-tools', '#vehicle-switch', '#hud-perf-pill'];
+function applyHudDriveMode(on){
+  for (const sel of HUD_HIDE_SEL){
+    const el = document.querySelector(sel);
+    if (el) el.classList.toggle('hud-drive-hidden', on);
+  }
+  document.getElementById('hud')?.classList.toggle('hud-compact', on);
+}
 let perfAcc = 0, perfFrames = 0, perfFps = 0;
 function updatePerfHud(dt){
   if (!perfEl) return;
@@ -2553,6 +2654,13 @@ function updatePerfHud(dt){
 window.__yc={ scene, player, camera, renderer, BIOMES, POIS, heightAt, sampleHeight, slopeAt, discovered, VEHICLES, setPlayerPos(x,z){ playerPos.x=x; playerPos.z=z; playerPos.y=sampleHeight(x,z)+VEHICLES[vehicleType].ride; settleToGround(); player.position.copy(playerPos); player.rotation.set(targetPitch, -playerYaw, targetRoll, 'YXZ'); player.updateMatrixWorld(true); },
   setVehicle(t){ setVehicle(t); },
   setCam(m){ camMode=m; },
+  // Đặt góc orbit để probe chụp cận cảnh / góc thấp một cách tất định.
+  setOrbit(pitch, dist, yaw){ camMode=2; camPitch=pitch; camDist=dist; if(yaw!==undefined) camYaw=yaw; return {camMode, camPitch, camDist, camYaw}; },
+  terrainMat(){ const t=terrain; return t ? { hasMap:!!t.material.map, hasNormal:!!t.material.normalMap,
+                 hasRoughMap:!!t.material.roughnessMap, roughness:t.material.roughness,
+                 nScale:[t.material.normalScale.x, t.material.normalScale.y] } : null; },
+  rendererInfo(){ const i=renderer.info; return { textures:i.memory.textures, geometries:i.memory.geometries,
+                 calls:i.render.calls, triangles:i.render.triangles, programs:i.programs?.length ?? null }; },
   env: () => envMeshes.map(e=>({ name:e.name, count:e.count })),
   envSeed: ENV_SEED,
   landmarks: () => landmarks.map(L => ({ kind:L.userData.kind, x:L.userData.x, z:L.userData.z,

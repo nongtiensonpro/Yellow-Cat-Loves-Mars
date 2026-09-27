@@ -201,3 +201,10 @@ a{color:inherit}
 /* Ẩn số đo hiệu năng mặc định để không chồng cảnh; bật bằng documentElement.dataset.perf='1' */
 #hud-perf-pill{ display:none; }
 html[data-perf="1"] #hud-perf-pill{ display:inline-flex; }
+
+/* ---- HUD gọn khi lái (Task 1.5 / review §6) ---- */
+/* Ẩn + trượt nhẹ để không "giật" khi vào/ra chế độ lái. */
+.hud-drive-hidden{ opacity:0 !important; pointer-events:none !important;
+                   transform:translateY(6px); transition:opacity .28s ease, transform .28s ease; }
+#hud-hint, #hud-tools, #vehicle-switch, #hud-perf-pill{ transition:opacity .28s ease, transform .28s ease; }
+.hud-compact .hud-left{ opacity:.92; }
