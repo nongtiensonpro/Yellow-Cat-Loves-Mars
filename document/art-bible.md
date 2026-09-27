@@ -175,3 +175,47 @@ Ba probe này đã bắt được lỗi thật trước đây (xuyên đất, PW
 ---
 
 *Bản này khóa sau Phase 0. Mọi thay đổi phải ghi lý do vào cuối file.*
+
+---
+
+## 9. Số đo mật độ môi trường (đo được 27/09/2026, sau Giai đoạn 1)
+
+Bản đồ **1400×1400 m = 1.64 triệu m²**. Mật độ phải đủ để mặt đất **không đọc
+thành một mảng màu phẳng**, nhưng phải có nhịp — không phun đều.
+
+| Lớp | Số lượng | Cỡ | Mục đích |
+|---|---:|---|---|
+| Đá lớn (boulder) | 260 | 2.4–5.2 m | silhouette giữa cảnh |
+| Đá vừa | 900 | 0.8–2.1 m | đọc được ở 60 m |
+| Vụn (pebble) | 3000 | 0.16–0.55 m | chi tiết cận cảnh |
+| Bột/sét (silt) | 320 | 2.5–8.0 m | phá vỡ mảng màu đất |
+| Hố (crater) | 95 | 3.2–9.5 m | đường viền + bóng |
+| Cụm đá | 90 | r 10–34 m | **có hướng**, không phun đều |
+
+**Ngưỡng kiểm tra (đo bằng `tests/_probe_density.mjs`):** trong bán kính **40 m**
+quanh người chơi phải có **≥ 1 boulder, ≥ 8 đá vừa, ≥ 25 vụn**. Trước khi sửa:
+**0 / 0 / 0** → đúng lý do cảnh đọc như "mặt phẳng procedural trống".
+
+**Quy tắc hình học theo cỡ:** đá ≥ 0.8 m dùng `Dodecahedron` (36 tam giác, đọc
+được faceted). Vụn < 0.6 m dùng `Tetrahedron` (4 tam giác) — ở cỡ này người
+chơi không phân biệt, nhưng tiết kiệm ~96k triangles/khung hình. **Không dùng
+hình học đắt cho vật nhỏ.**
+
+**Budget hình học:** sau Giai đoạn 1 — **143k triangles, 207 draw calls** (mốc
+cũ: 97.5k / 195). InstancedMesh giữ draw call gần như không đổi khi tăng số vật.
+
+## 10. Fog & đường chân trời (sửa 27/09/2026)
+
+Bản đồ chỉ 1400 m nên nhìn ra rìa sẽ thấy **cạnh lưới terrain như một đường
+ngang tối** — đúng lỗi review chỉ ra.
+
+- **Màu fog phải hòa vào trời ở chân trời.** Cũ: fog `#2a140a` (rất tối) vs trời
+  `#ffb07a` → tương phản mạnh, cạnh lưới lộ rõ. Nay: fog `#c4713f`, gần màu
+  trời chân trời nhưng tối hơn để giữ chiều sâu.
+- **Mật độ fog 0.0025** → ở 700 m (bán kính bản đồ) đã ~95 % mờ; ở 100 m chỉ ~6 %.
+  Mật độ cũ 0.0012 chỉ mờ 50 % ở 700 m → không đủ che cạnh lưới.
+- **Dãy núi xa:** 46 đỉnh ở bán kính 1050 m, cao 34–144 m, tắt shadow (quá xa).
+  Tạo tầng "background" mà art-bible §5 yêu cầu — chỉ còn silhouette.
+
+**Quy tắc:** bất kỳ thay đổi nào ở fog/sky phải kiểm bằng ảnh chụp ở **3 khoảng
+cách** (gần / 100 m / 400 m) — nếu thấy đường ngang ở chân trời là hỏng.

@@ -164,8 +164,13 @@ function applyGraphicsPreset(name, save){
 
 
 const scene = new THREE.Scene();
-const FOG_BASE = 0.0012;
-scene.fog = new THREE.FogExp2(0x2a140a, FOG_BASE);
+// Fog phải HÒA vào trời ở chân trời, nếu không cạnh lưới terrain 1400m sẽ lộ
+// thành một đường ngang tối — đúng lỗi review chỉ ra. Màu fog gần màu trời
+// chân trời (#ffb07a) nhưng tối hơn một chút để giữ chiều sâu.
+// Mật độ 0.0025 → ở 700m (bán kính bản đồ) đã ~95% mờ, ở 100m chỉ ~6%.
+const FOG_COLOR = 0xc4713f;
+const FOG_BASE = 0.0025;
+scene.fog = new THREE.FogExp2(FOG_COLOR, FOG_BASE);
 
 const camera = new THREE.PerspectiveCamera(68, innerWidth/innerHeight, 0.1, 3000);
 const camTarget = new THREE.Vector3();
@@ -472,28 +477,252 @@ const terrain = new THREE.Mesh(terrainGeo, terrainMat);
 terrain.receiveShadow=true;
 scene.add(terrain);
 
-// Rocks + craters decoration
-const rockGeo = new THREE.DodecahedronGeometry(1,0);
-const rockMat = new THREE.MeshStandardMaterial({ color:0x6b3a22, roughness:0.85 });
-const rockCount=520;
-const rocks=new THREE.InstancedMesh(rockGeo, rockMat, rockCount);
-rocks.castShadow=true; rocks.receiveShadow=true;
-const dummy=new THREE.Object3D();
-let ri=0;
-for(let i=0;i<900 && ri<rockCount;i++){
-  const x=(Math.random()-0.5)*TERRAIN_SIZE;
-  const z=(Math.random()-0.5)*TERRAIN_SIZE;
-  const y=sampleHeight(x,z);
-  if(y<-6) continue;
-  const s=0.5+Math.random()*1.8;
-  dummy.position.set(x, y+ s*0.35, z);
-  dummy.rotation.set(Math.random()*Math.PI, Math.random()*Math.PI, Math.random()*Math.PI);
-  dummy.scale.set(s,s*0.85,s);
-  dummy.updateMatrix();
-  rocks.setMatrixAt(ri++, dummy.matrix);
+// Rocks + craters: ĐÃ CHUYỂN sang hệ "mật độ môi trường" bên dưới (4 lớp
+// instanced + cụm + hố + seed tất định). Bản cũ 520 viên Math.random() bị gỡ
+// vì vừa tốn draw call vừa phủ đều — đúng thứ khiến cảnh đọc như mặt phẳng trống.
+const dummy=new THREE.Object3D();   // giữ lại: các khối sau dùng chung
+
+// ════════════════════════════════════════════════════════════════════════════
+// LANDMARK KIT — Giai đoạn 1 P0: "không còn cảm giác prototype trống"
+// Quy tắc tuân thủ document/art-bible.md §4:
+//   1. đỉnh chính ≥ 1.6× chiều cao phương tiện (≥3.2m)
+//   2. không đường thẳng nào dài quá 60m trong silhouette
+//   3. ≥2 tầng đọc: khối chính + chi tiết phá vỡ đường viền
+//   4. đổ bóng đọc được (hình khối có chiều sâu, không phải tấm phẳng)
+//   5. 2 landmark cạnh nhau không cùng hình dạng
+// Mỗi landmark = khối chính + đế + răng/rãnh phá vỡ viền + beacon (đọc được xa).
+// ════════════════════════════════════════════════════════════════════════════
+const LM_MATS = {
+  rock:   new THREE.MeshStandardMaterial({ color:0x6b3a22, roughness:0.85, metalness:0.0, flatShading:true }),
+  rockLit:new THREE.MeshStandardMaterial({ color:0x8a4a1e, roughness:0.80, metalness:0.0, flatShading:true }),
+  dark:   new THREE.MeshStandardMaterial({ color:0x3a1c0d, roughness:0.92, metalness:0.0, flatShading:true }),
+  beacon: new THREE.MeshStandardMaterial({ color:0xffcc33, emissive:0xffa500, emissiveIntensity:0.55, roughness:0.4 }),
+};
+const landmarks = [];
+
+// Một landmark: đá chính (hình học KHÁC NHAU theo loại) + đế bệt + chi tiết viền.
+function buildLandmark(kind, x, z, scale){
+  const g = new THREE.Group();
+  const y = sampleHeight(x, z);
+  g.position.set(x, y, z);
+
+  if (kind === 'mesa') {
+    // ĐĐÁ TẤM: đỉnh nhưng rất phẳng, bề rộng — tạo silhouette dạng bàn.
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(26*scale, 34*scale, 9*scale, 7, 1), LM_MATS.rock);
+    base.position.y = 4.5*scale; base.castShadow = base.receiveShadow = true; g.add(base);
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(22*scale, 26*scale, 5*scale, 7, 1), LM_MATS.rockLit);
+    cap.position.y = 11*scale; cap.castShadow = cap.receiveShadow = true; g.add(cap);
+    // Răng phá vỡ viền (quy tắc 3): các lăng trụ nhỏ dọc miệng mesa.
+    for (let i=0;i<9;i++){
+      const a = (i/9)*Math.PI*2 + (i%2)*0.18;
+      const r = 23*scale;
+      const tooth = new THREE.Mesh(new THREE.CylinderGeometry(1.1*scale, 2.2*scale, (4+((i*7)%5))*scale, 5, 1), LM_MATS.dark);
+      tooth.position.set(Math.cos(a)*r, (13.5+((i*3)%3))*scale, Math.sin(a)*r);
+      tooth.rotation.set(((i%3)-1)*0.09, a, ((i%4)-1.5)*0.07);
+      tooth.castShadow = tooth.receiveShadow = true; g.add(tooth);
+    }
+  } else if (kind === 'spire') {
+    // THÁP NHỌN: nhiều tầng xoắn, đỉnh nhọn — silhouette khác hẳn mesa.
+    let w = 11*scale, h = 0;
+    for (let i=0;i<7;i++){
+      const seg = new THREE.Mesh(new THREE.CylinderGeometry(w*0.74, w, (7+((i*5)%4))*scale, 6, 1), i%2 ? LM_MATS.rockLit : LM_MATS.rock);
+      h += (7+((i*5)%4))*scale*0.5;
+      seg.position.y = h; seg.rotation.y = i*0.42;
+      seg.castShadow = seg.receiveShadow = true; g.add(seg);
+      w *= 0.79; h += (7+((i*5)%4))*scale*0.5;
+    }
+    const cap = new THREE.Mesh(new THREE.ConeGeometry(w*1.25, 13*scale, 6), LM_MATS.dark);
+    cap.position.y = h + 6.5*scale; cap.castShadow = true; g.add(cap);
+  } else if (kind === 'arch') {
+    // VÒM: hai chân + nhịp cầu, khoảng trống đọc được ngay ở silhouette.
+    const legH = 22*scale, span = 30*scale;
+    for (const s of [-1, 1]){
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(5*scale, 8.5*scale, legH, 6, 1), LM_MATS.rock);
+      leg.position.set(s*span*0.5, legH*0.5, 0);
+      leg.rotation.z = -s*0.07;
+      leg.castShadow = leg.receiveShadow = true; g.add(leg);
+    }
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(span*1.12, 6.5*scale, 9*scale), LM_MATS.rockLit);
+    deck.position.y = legH; deck.castShadow = deck.receiveShadow = true; g.add(deck);
+    // Rãnh phá vỡ viền dưới vòm
+    for (let i=0;i<6;i++){
+      const sh = new THREE.Mesh(new THREE.BoxGeometry((3+((i*5)%4))*scale, 2.2*scale, 4*scale), LM_MATS.dark);
+      sh.position.set((i-2.5)*span*0.17, legH - 3.4*scale, (i%2?1:-1)*4.4*scale);
+      sh.rotation.set(0, (i%2?0.3:-0.25), 0);
+      sh.castShadow = true; g.add(sh);
+    }
+  } else { // 'field' — cụm tháp nhỏ, đọc thành cả lũy thay vì một khối
+    for (let i=0;i<5;i++){
+      const ox = (i-2)*7*scale, oz = ((i*7)%3-1)*6*scale;
+      const hh = (10+((i*11)%13))*scale;
+      const t = new THREE.Mesh(new THREE.CylinderGeometry(1.5*scale, 4.5*scale, hh, 6, 1), i%2?LM_MATS.rockLit:LM_MATS.rock);
+      t.position.set(ox, sampleHeight(x+ox, z+oz)-y + hh*0.5, oz);
+      t.rotation.set(((i%3)-1)*0.1, i*0.8, ((i%4)-1.5)*0.08);
+      t.castShadow = t.receiveShadow = true; g.add(t);
+    }
+  }
+
+  // Đế bệt: tách nền/tiền cảnh, đồng thời "neo" landmark xuống mặt đất
+  // (quy tắc 4 — không ai muốn thấy khối đá lơ lửng).
+  const skirt = new THREE.Mesh(new THREE.CylinderGeometry(46*scale, 58*scale, 1.6, 16), LM_MATS.dark);
+  skirt.position.y = 0.4; skirt.receiveShadow = true; g.add(skirt);
+
+  // Beacon nhỏ trên đỉnh — điểm nhấn phát sáng, đọc được từ rất xa.
+  const bx = new THREE.Mesh(new THREE.SphereGeometry(1.5*scale, 8, 6), LM_MATS.beacon);
+  const topY = (kind==='mesa' ? 17*scale : kind==='arch' ? 30*scale : kind==='spire' ? 66*scale : 22*scale);
+  bx.position.set(0, topY, 0); g.add(bx);
+  const halo = new THREE.PointLight(0xffb060, 6, 120*scale, 2);
+  halo.position.copy(bx.position); g.add(halo);
+
+  g.userData = { kind, x, z, beacon: bx, halo, baseY: y, topY };
+  scene.add(g);
+  landmarks.push(g);
+  return g;
 }
-rocks.instanceMatrix.needsUpdate=true;
-scene.add(rocks);
+
+// Bố trí: 1 landmark LỚN trong tầm nhìn spawn Arcadia (0,0) — mục tiêu mốc thị giác.
+buildLandmark('mesa',  118,  96, 1.55);   // nhìn thấy ngay khi bắt đầu
+buildLandmark('spire',-152, -88, 1.15);
+buildLandmark('arch',   62, -168, 0.95);
+buildLandmark('field', 236, -46, 1.30);
+buildLandmark('field',-238, 168, 1.05);
+buildLandmark('spire',  64, 292, 1.25);
+buildLandmark('mesa', -108, 336, 1.40);
+buildLandmark('arch',  332, 176, 0.85);
+console.info('[landmark] dựng', landmarks.length, 'landmark');
+// ════════════════════════════════════════════════════════════════════════════
+// MẬT ĐỘ MÔI TRƯỜNG — Giai đoạn 1 P0 Task 1.2
+// Trước đây: 520 Dodecahedron phun đều bằng Math.random() toàn cục → mặt phẳng
+// trống, không có cụm, không có cỡ, không có hướng.
+// Nay: seed TẤT ĐỊNH (cùng seed luôn cho cùng thế giới) + 4 lớp cỡ + cụm +
+// hố + vệt sediment, mỗi lớp một InstancedMesh (giữ draw call thấp).
+// Lớp theo art-bible.md §4: đỉnh chính / khối chính / chi tiết viền / nền.
+// ════════════════════════════════════════════════════════════════════════════
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0;
+  let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t;
+  return ((t^t>>>14)>>>0)/4294967296; }; }
+const ENV_SEED = 20260927;
+const rnd = mulberry32(ENV_SEED);              // rng tất định
+const rrange = (a,b) => a + rnd()*(b-a);
+
+// 4 lớp: [geo, mat, sMin, sMax, count, yLift]
+const envMat = new THREE.MeshStandardMaterial({ color:0x6b3a22, roughness:0.88, metalness:0, flatShading:true });
+const envMatLit = new THREE.MeshStandardMaterial({ color:0x8a4a1e, roughness:0.84, metalness:0, flatShading:true });
+const envMatDark = new THREE.MeshStandardMaterial({ color:0x42200f, roughness:0.93, metalness:0, flatShading:true });
+const envMatSilt = new THREE.MeshStandardMaterial({ color:0xbb7a45, roughness:0.95, metalness:0 });
+
+// Mật độ đo được trước đó: 856 vật thể / 1.64M m² = 1 vật / ~1985 m², tức quãng
+// 45m không có gì → đọc như mặt phẳng trống. Nay mỗi cụm (~1100 m²) chứa
+// vài chục vật, tương đương ~1 vật / 40–150 m² trong vùng có cụm.
+const envLayers = [
+  // ĐÁ LỚN — tạo silhouette giữa cảnh (không lấn át landmark)
+  { name:'boulder', geo:new THREE.DodecahedronGeometry(1,0), mat:envMat,    sMin:2.4, sMax:5.2, n: 260, y:0.32, shadow:true  },
+  // ĐÁ VỪA — mật độ chính, đọc được ở 60m
+  { name:'rock',    geo:new THREE.DodecahedronGeometry(1,0), mat:envMatLit, sMin:0.8, sMax:2.1, n: 900, y:0.30, shadow:true  },
+  // VỤN — chi tiết viền, cự ly gần
+  // vụn: TETRA (4 tam giác) thay DODECA (36 tam giác) — ở cỡ 0.16–0.55m người
+  // chơi không phân biệt được, nhưng tiết kiệm ~96k triangles mỗi khung hình.
+  { name:'pebble',  geo:new THREE.TetrahedronGeometry(1,0), mat:envMatDark,sMin:0.16,sMax:0.55,n:3000, y:0.22, shadow:false },
+  // BỘT/SÉT — vệt phẳng, phá vỡ mảng màu đồng nhất của mặt đất
+  { name:'silt',    geo:new THREE.CircleGeometry(1,7),          mat:envMatSilt,sMin:2.5, sMax:8.0, n: 320, y:0.05, shadow:false, flat:true },
+];
+
+// Cụm: đá không phun đều mà tụ lại thành cụm như thật.
+// Cụm nhỏ hơn + NHIỀU hơn. Cụm đầu tiên neo đúng tại spawn để người chơi
+// luôn thấy chi tiết ngay khung hình đầu tiên (P0: "mọi 30-60s có mốc mới").
+const CLUSTERS = [{ x:0, z:0, r:30, k:9 }];
+for (let i=0;i<89;i++){
+  CLUSTERS.push({ x:rrange(-650,650), z:rrange(-650,650), r:rrange(10,34), k:rrange(3,10) });
+}
+
+const envMeshes = [];
+for (const L of envLayers){
+  const im = new THREE.InstancedMesh(L.geo, L.mat, L.n);
+  im.castShadow = L.shadow; im.receiveShadow = true;
+  im.frustumCulled = true;
+  const d = new THREE.Object3D();
+  let placed = 0, guard = 0;
+  while (placed < L.n && guard < L.n*14){
+    guard++;
+    let x, z;
+    if (L.name === 'silt'){
+      // silt bám cụm nhưng trải rộng hơn để phủ mảng màu
+      const c = CLUSTERS[Math.floor(rnd()*CLUSTERS.length)];
+      const a = rnd()*Math.PI*2, rr = c.r*1.9*Math.sqrt(rnd());
+      x = c.x + Math.cos(a)*rr; z = c.z + Math.sin(a)*rr;
+    } else {
+      // đá bám theo cụm → có hướng, có nhịp, không phải "mưa rào"
+      const c = CLUSTERS[Math.floor(rnd()*CLUSTERS.length)];
+      const a = rnd()*Math.PI*2, rr = c.r*Math.sqrt(rnd())*c.k/8;
+      x = c.x + Math.cos(a)*rr; z = c.z + Math.sin(a)*rr;
+    }
+    if (x < -690 || x > 690 || z < -690 || z > 690) continue;
+    const y = sampleHeight(x,z);
+    if (y < -8) continue;                                  // bỏ vùng hố sâu
+    const s = rrange(L.sMin, L.sMax);
+    d.position.set(x, y + s*L.y, z);
+    if (L.flat){ d.rotation.set(-Math.PI/2 + rrange(-0.08,0.08), 0, rnd()*Math.PI*2); }
+    else { d.rotation.set(rnd()*Math.PI, rnd()*Math.PI, rnd()*Math.PI); }
+    // Không vật nào chồng lên phương tiện / landmark
+    d.scale.set(s, s*rrange(L.flat?1:0.62, L.flat?1:0.92), s);
+    d.updateMatrix();
+    im.setMatrixAt(placed++, d.matrix);
+  }
+  im.count = placed;
+  im.instanceMatrix.needsUpdate = true;
+  scene.add(im);
+  envMeshes.push({ name:L.name, count:placed, mesh:im });
+}
+
+// Hố nhỏ (crater): vòng trũng + vành đất đổ. Rẻ hơn hình học nặng, đọc rõ trên
+// mặt phẳng nên đây là cách rẻ nhất để phá vỡ sự đồng nhất của mặt đất.
+const craterGeo = new THREE.TorusGeometry(1, 0.30, 5, 9);
+const craterMat = new THREE.MeshStandardMaterial({ color:0x4a2410, roughness:0.95, metalness:0, flatShading:true });
+const CRATERS = 95;
+const craterIM = new THREE.InstancedMesh(craterGeo, craterMat, CRATERS);
+craterIM.receiveShadow = true;
+{
+  const d = new THREE.Object3D();
+  let placed = 0, guard = 0;
+  while (placed < CRATERS && guard < CRATERS*20){
+    guard++;
+    const c = CLUSTERS[Math.floor(rnd()*CLUSTERS.length)];
+    const a = rnd()*Math.PI*2, rr = c.r*1.5*Math.sqrt(rnd());
+    const x = c.x + Math.cos(a)*rr, z = c.z + Math.sin(a)*rr;
+    if (x < -660 || x > 660 || z < -660 || z > 660) continue;
+    const y = sampleHeight(x,z); if (y < -8) continue;
+    const s = rrange(3.2, 9.5);
+    d.position.set(x, y + 0.25, z);
+    d.rotation.set(-Math.PI/2, 0, rnd()*Math.PI);
+    d.scale.set(s, s, s*0.42);
+    d.updateMatrix();
+    craterIM.setMatrixAt(placed++, d.matrix);
+  }
+  craterIM.count = placed; craterIM.instanceMatrix.needsUpdate = true;
+  scene.add(craterIM);
+  envMeshes.push({ name:'crater', count:placed, mesh:craterIM });
+}
+console.info('[env]', envMeshes.map(e=>`${e.name}:${e.count}`).join(' '), '| seed', ENV_SEED);
+
+// ── DÃY NÚI XA (horizon range) ───────────────────────────────────────────────
+// Bản đồ chỉ 1400m, nên nhìn ra rìa sẽ thấy trời trống. Vòng núi thấp ở
+// ~1050m giả làm đường chân trời có chiều sâu, và fog sẽ nuốt dần — đúng
+// tầng "background" mà art-bible.md §5 yêu cầu (chỉ còn silhouette).
+{
+  const farMat = new THREE.MeshStandardMaterial({ color:0x8e4a28, roughness:0.95, metalness:0, flatShading:true });
+  const R = 1050, N = 46;
+  for (let i=0;i<N;i++){
+    const a = (i/N)*Math.PI*2;
+    const h = 34 + ((i*37)%11)*11;          // 34..144m — nhấp nháy bất quy tắc
+    const w = 90 + ((i*53)%9)*16;
+    const peak = new THREE.Mesh(new THREE.ConeGeometry(w, h, 5, 1), farMat);
+    peak.position.set(Math.cos(a)*R, h*0.5 - 6, Math.sin(a)*R);
+    peak.rotation.y = a*1.7;
+    peak.castShadow = false; peak.receiveShadow = false;  // xa quá, tắt shadow
+    scene.add(peak);
+  }
+}
+
 
 // Paw collectibles
 const pawGroup=new THREE.Group();
@@ -2067,6 +2296,16 @@ function frame(now){
   requestAnimationFrame(frame);
   const dt=Math.min(0.033, (now-lastT)/1000); lastT=now;
   updatePerfHud(dt);
+  // Beacon landmark nhấp nháy chậm — ở xa đây là mốc định hướng đầu tiên,
+  // phải đủ tương phản với bầu trời đỏ mà không chói mắt khi đến gần.
+  if (landmarks.length){
+    const bp = 0.55 + 0.45*Math.sin(now*0.0016);
+    for (let i=0;i<landmarks.length;i++){
+      const L = landmarks[i];
+      L.userData.halo.intensity = 3 + bp*5;
+      L.userData.beacon.scale.setScalar(1 + bp*0.28);
+    }
+  }
 
   // ══════ MOVEMENT (sửa xuyên địa hình) ══════
   const conf=VEHICLES[vehicleType];
@@ -2314,6 +2553,10 @@ function updatePerfHud(dt){
 window.__yc={ scene, player, camera, renderer, BIOMES, POIS, heightAt, sampleHeight, slopeAt, discovered, VEHICLES, setPlayerPos(x,z){ playerPos.x=x; playerPos.z=z; playerPos.y=sampleHeight(x,z)+VEHICLES[vehicleType].ride; settleToGround(); player.position.copy(playerPos); player.rotation.set(targetPitch, -playerYaw, targetRoll, 'YXZ'); player.updateMatrixWorld(true); },
   setVehicle(t){ setVehicle(t); },
   setCam(m){ camMode=m; },
+  env: () => envMeshes.map(e=>({ name:e.name, count:e.count })),
+  envSeed: ENV_SEED,
+  landmarks: () => landmarks.map(L => ({ kind:L.userData.kind, x:L.userData.x, z:L.userData.z,
+                                        topY:+L.userData.topY.toFixed(1) })),
   GFX_PRESETS, gfx: ()=>gfxName,
   setGfx(n){ return applyGraphicsPreset(n, true); },
   perf(){ return { fps:perfFps, ...renderer.info.render, gfx:gfxName,
