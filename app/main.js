@@ -667,9 +667,145 @@ const terrainMat = new THREE.MeshStandardMaterial({
   roughnessMap: terrMaps.rough, roughness: 1.0,   // 1.0 để roughnessMap chi phối (0.59–0.85)
   metalness:0.02,
 });
-const terrain = new THREE.Mesh(terrainGeo, terrainMat);
-terrain.receiveShadow=true;
-scene.add(terrain);
+// ════════════════════════════════════════════════════════════════════════════
+// TERRAIN CHUNK + LOD — Phase 2 Task 2.5
+//
+// Trước đây: MỘT PlaneGeometry 1400×1400, 160×160 ô = 51 200 tam giác, luôn
+// vẽ trọn bản đồ mỗi khung bất kể người chơi đứng ở đâu. 1400×1400 m đứng
+// yên thì nhìn thấy có vài trăm mét — phần còn lại vẽ để không.
+//
+// Cách chia: 8×8 chunk, mỗi chunk 175m. Ba mức LOD lồng NHAU trên cùng một
+// lưới: 20 → 10 → 5 ô. Vì 20 chia hết cho 10 và cho 5, mọi đỉnh của mức thô
+// đều là tập con của mứt mịn và CÙNG LÀ một điểm lưới, nên:
+//   · chiều cao lấy thẳng từ HF.data → khớp 100% với physics
+//   · hai LOD kề nhau CÙNG dùng một đỉnh ở mép → KHÔNG có khe nứt theo cấu trúc,
+//     không cần kỹ thuật "vày che" (skirt) hay snap cạnh.
+// Ngưỡng chuyển mức đặt sau tường bụi 430m (Task 2.6) nên người chơi không thấy
+// đường chuyển; thêm hysteresis 28m để chunk đang nằm đúng ngưỡng không nhấp nháy.
+const CHUNKS        = 8;
+const CHUNK_SIZE    = TERRAIN_SIZE / CHUNKS;                 // 175 m
+const HF_CELLS_CHUNK= Math.round(CHUNK_SIZE / HF.cell);       // 20 ô heightfield
+const CHUNK_LOD_SEG = [HF_CELLS_CHUNK, HF_CELLS_CHUNK/2, HF_CELLS_CHUNK/4];  // 20/10/5
+const CHUNK_LOD_DIST= [190, 380, 700];   // <190 m LOD0, <380 LOD1, còn lại LOD2
+const CHUNK_HYST    = 28;                // m: nới ngưỡng khi lùi ra để không nhấp nháy
+
+const terrainChunks = [];
+const _chNormal = new THREE.Vector3();
+const _chColor  = new THREE.Color();
+const POLAR_TINT= new THREE.Color(0xe8ddd0);
+const STORM_TINT= new THREE.Color(0x8a4a1e);
+const chunkGroup= new THREE.Group();
+chunkGroup.name='terrainChunks';
+scene.add(chunkGroup);
+
+/** Dựng geometry của 1 chunk ở 1 mức LOD, đọc chiều cao từ HF.data. */
+function buildChunkGeo(cx, cz, seg){
+  const n  = HF.n, data = HF.data, min = HF.min, cell = HF.cell;
+  const stride = HF_CELLS_CHUNK / seg;                 // 1, 2 hoặc 4
+  const i0 = cx*HF_CELLS_CHUNK, j0 = cz*HF_CELLS_CHUNK;
+  const vcount = (seg+1)*(seg+1);
+  const pos  = new Float32Array(vcount*3);
+  const nor  = new Float32Array(vcount*3);
+  const col  = new Float32Array(vcount*3);
+  const idx  = new Uint32Array(seg*seg*6);
+  for (let j=0;j<=seg;j++){
+    const gj = Math.min(n-1, j0 + j*stride);
+    for (let i=0;i<=seg;i++){
+      const gi = Math.min(n-1, i0 + i*stride);
+      const k  = gj*n + gi;
+      const x  = min + gi*cell, z = min + gj*cell, y = data[k];
+      const v  = (j*(seg+1)+i)*3;
+      pos[v]=x; pos[v+1]=y; pos[v+2]=z;
+      // pháp tuyến: gradient lưới, dùng chung công thức với HF.normalAt
+      const hL=data[gj*n+Math.max(0,gi-1)], hR=data[gj*n+Math.min(n-1,gi+1)];
+      const hD=data[Math.max(0,gj-1)*n+gi], hU=data[Math.min(n-1,gj+1)*n+gi];
+      _chNormal.set(hL-hR, 2*cell, hD-hU).normalize();
+      nor[v]=_chNormal.x; nor[v+1]=_chNormal.y; nor[v+2]=_chNormal.z;
+      // màu: đúng công thức vertex color của terrain gốc
+      const slope = 1 - _chNormal.y;
+      // PHẢI Y HỆT công thức gốc. Đã viết sai `y < -2` thành `y > -2` một lần:
+      // nhánh tối (0.07,0.35,0.30) dành cho đất TRŨNG dưới -2m, nhưng đảo dấu thành
+      // `y > -2` thì gần như TOÀN BỘ đồng bằng (y≈0) rơi vào nhánh tối → mặt đất
+      // đen như mực, chỉ còn đá vẫn thấy.
+      if      (y> 80) _chColor.setHSL(0.08, 0.25, 0.62 - slope*0.2);
+      else if (y> 35) _chColor.setHSL(0.06, 0.55, 0.45 - slope*0.15);
+      else if (y> 12) _chColor.setHSL(0.05, 0.45, 0.40);
+      else if (y< -2) _chColor.setHSL(0.07, 0.35, 0.30);
+      else            _chColor.setHSL(0.055,0.50, 0.38);
+      const bi = biomeAt(x,z).biome;
+      if (bi.id==='polar') _chColor.lerp(POLAR_TINT, 0.45);
+      if (bi.id==='storm') _chColor.lerp(STORM_TINT, 0.20);
+      // BUG ĐÃ MẮC: viết `_chColor.z` — THREE.Color có .r/.g/.b, KHÔNG có .z.
+      // undefined ghi vào Float32Array thành NaN → mảng đen; và NaN lan qua
+      // chuỗi blur của UnrealBloomPass nên đen TOÀN BỘ khung hình.
+      col[v]=_chColor.r; col[v+1]=_chColor.g; col[v+2]=_chColor.b;
+    }
+  }
+  for (let j=0;j<seg;j++) for (let i=0;i<seg;i++){
+    const a=j*(seg+1)+i, b=a+1, c=a+seg+1, d=c+1, o=(j*seg+i)*6;
+    // cùng cách chia tam giác như PlaneGeometry để hướng pháp tuyến khớp
+    idx[o]=a; idx[o+1]=c; idx[o+2]=b;
+    idx[o+3]=c; idx[o+4]=d; idx[o+5]=b;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos,3));
+  g.setAttribute('normal',   new THREE.BufferAttribute(nor,3));
+  g.setAttribute('color',    new THREE.BufferAttribute(col,3));
+  g.setIndex(new THREE.BufferAttribute(idx,1));
+  g.computeBoundingSphere();
+  return g;
+}
+
+for (let cz=0; cz<CHUNKS; cz++) for (let cx=0; cx<CHUNKS; cx++){
+  const lods = CHUNK_LOD_SEG.map(s => new THREE.Mesh(buildChunkGeo(cx,cz,s), terrainMat));
+  for (const m of lods){ m.receiveShadow = true; m.visible = false; chunkGroup.add(m); }
+  // tâm chunk để tính khoảng cách
+  const cxm = HF.min + (cx+0.5)*CHUNK_SIZE, czm = HF.min + (cz+0.5)*CHUNK_SIZE;
+  terrainChunks.push({ cx, cz, x:cxm, z:czm, lods, lod:-1 });
+}
+// Chốt an toàn: NaN trong bất kỳ thuộc tính nào cũng làm mảng đen, và nếu post-FX
+// đang bật thì còn lan qua bloom. Quét một lần lúc khởi tạo, có thì báo ngay.
+{
+  let bad = 0, where = '';
+  for (const c of terrainChunks) for (const m of c.lods){
+    for (const nm of ['position','normal','color']){
+      const a = m.geometry.getAttribute(nm).array;
+      for (let i=0;i<a.length;i++) if (!Number.isFinite(a[i])){
+        bad++; where = `${m.geometry.uuid.slice(0,6)}/${nm}[${i}]`; break; }
+    }
+  }
+  if (bad) console.error('[terrain] LỖI: NaN/Infinity trong', bad, 'thuộc tính, vd', where);
+  else console.info('[terrain] ✓ không NaN trong position/normal/color');
+}
+console.info('[terrain]', terrainChunks.length, 'chunk ×', CHUNK_LOD_SEG.length, 'LOD =',
+            terrainChunks.length*CHUNK_LOD_SEG.length, 'mesh (chỉ 1 LOD/chunk hiện tại)');
+
+// Chọn LOD theo khoảng cách. Chạy mỗi 6 khung: khoảng cách đổi chậm, không
+// cần tính từng khung, và giữ được ngân sách CPU cho phần còn lại.
+let _chunkTick = 0;
+function updateChunkLOD(){
+  const px = playerPos.x, pz = playerPos.z;
+  let vis = 0, tris = 0;
+  for (const c of terrainChunks){
+    const d = Math.hypot(c.x - px, c.z - pz);
+    let want;
+    if      (d < CHUNK_LOD_DIST[0])              want = 0;
+    else if (d < CHUNK_LOD_DIST[1])              want = 1;
+    else if (d < CHUNK_LOD_DIST[2] + CHUNK_HYST) want = 2;
+    else { c.lods[2].visible = false; if (c.lod!==-1){ c.lod=-1; } continue; }
+    // hysteresis: khi đang ở mức cao hơn thì phải lùi xa hơn ngưỡng mới hạ mức
+    if (c.lod > want && d < CHUNK_LOD_DIST[c.lod] + CHUNK_HYST) want = c.lod;
+    if (c.lod !== want){
+      c.lods.forEach((m,i)=> m.visible = (i===want));
+      c.lod = want;
+    }
+    vis++;
+    const s = CHUNK_LOD_SEG[want];
+    tris += s*s*2;
+  }
+  return { vis, tris };
+}
+const terrain = { receiveShadow:true };   // giữ tên cho code cũ/tham chiếu debug
 
 // Rocks + craters: ĐÃ CHUYỂN sang hệ "mật độ môi trường" bên dưới (4 lớp
 // instanced + cụm + hố + seed tất định). Bản cũ 520 viên Math.random() bị gỡ
@@ -1624,6 +1760,16 @@ function buildMeoFromGLB(){
   vRefs.glbTail = [N.tail_1, N.tail_2, N.tail_3, N.tail_4, N.tail_5, N.tail_tip].filter(Boolean);
   // selfBody = phần thân tĩnh, ẩn ở góc nhìn thứ nhất (ngực che tay khi lái rover)
   vRefs.glbSelf = [N.body, N.legs].filter(Boolean);
+
+  // Kích hoạt animation mượt mà cho bản GLB: đầu nghiêng theo gió, đuôi vẫy sóng, ẩn đầu ở góc FPV
+  if (N.head) vRefs.head = N.head;
+  if (vRefs.glbTail.length) vRefs.tailSegs = vRefs.glbTail;
+  if (vRefs.glbSelf.length) {
+    vRefs.selfBody = {
+      set visible(v){ for(const m of vRefs.glbSelf) m.visible = v; },
+      get visible(){ return vRefs.glbSelf[0] ? vRefs.glbSelf[0].visible : true; }
+    };
+  }
   return cat;
 }
 
@@ -3403,6 +3549,9 @@ function frame(now){
   // Bão bụi 3 lớp (Task 2.6). Thay khối cũ: khối cũ vừa ghi vị trí hạt theo
   // TOẠ ĐỘ TUYỆT ĐỐI vừa dịch cả Points theo playerPos → cộng hai lần, hạt bị
   // đẩy lệch gấp đôi. Nay hạt nằm trong hộp CỤC BỘ quanh người chơi.
+  // Task 2.5: chọn LOD chunk mỗi 6 khung (khoảng cách đổi chậm).
+  if(++_chunkTick % 6 === 0) updateChunkLOD();
+
   updateDust(dt, stormLevel, Math.min(1, speedKmh/55), atmoDust);
 
   // Phase 3: POI discovery
@@ -3635,6 +3784,16 @@ function updatePerfHud(dt){
 // expose for debug
 window.__yc={ THREE, scene, player, camera, renderer, BIOMES, POIS, heightAt, sampleHeight, slopeAt, discovered, VEHICLES, setPlayerPos(x,z){ playerPos.x=x; playerPos.z=z; playerPos.y=sampleHeight(x,z)+VEHICLES[vehicleType].ride; settleToGround(); player.position.copy(playerPos); player.rotation.set(targetPitch, -playerYaw, targetRoll, 'YXZ'); player.updateMatrixWorld(true); },
   setVehicle(t){ setVehicle(t); },
+  // KHÔNG thêm renderer/scene/camera ở đây: window.__yc={...} dạng gọn ở cuối
+  // file đã khai báo chúng là OBJECT, và gán sau sẽ đè lên hàm → probes cũ
+  // đọc __yc.renderer.info là undefined. Chỉ thêm tên chưa có.
+  composer:()=>composer, postFXOn:()=>postEnabled, HF:()=>HF,
+  chunkInfo(){ const s=updateChunkLOD();
+    return { chunks:terrainChunks.length, visible:s.vis, tris:s.tris,
+             lodSegs:CHUNK_LOD_SEG.slice(), dists:CHUNK_LOD_DIST.slice(),
+             perLod:terrainChunks.reduce((a,c)=>{ if(c.lod>=0){const s=CHUNK_LOD_SEG[c.lod]; a[s]=(a[s]||0)+1;} return a; },{}),
+             meshCount:chunkGroup.children.length,
+             y:terrainChunks.map(c=>c.x+','+c.z+','+c.lod).slice(0,8) }; },
   meoInfo(){ return { useGLB: meoUseGLB, loaded: !!meoGLTF, err: meoLoadErr,
     nodes: meoGLTF ? meoGLTF.children.map(c=>c.name) : null }; },
   setMeoSource(u){ applyMeoSource(u); return { useGLB: meoUseGLB }; },
