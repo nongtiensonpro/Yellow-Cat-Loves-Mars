@@ -287,3 +287,40 @@ và mật độ fog bị hardcode `0.0012` âm thầm vô hiệu hoá bản sử
 - Lấy bánh **index 0 và 1** (trái/phải cùng trục). Rover có
   `[[-1,0.68],[-1,-0.68],[1,0.68],[1,-0.68]]`; lấy `i+=2` là 0 và 2 → cùng
   `z=+0.68` → chồng thành **một** vệt. Đã dính lỗi này một lần.
+
+## 13. Cascade shadow 2 lớp (Task 2.3, 2026-09-27)
+
+| Lớp | Ánh sáng | Hộp | mapSize | Độ phân giải | Phủ |
+|---|---|---|---|---|---|
+| Gần | `sun` (layer 1) | ±40 m | 2048 | **0.020 m/texel** | xe + Mèo Vàng |
+| Xa | `sunFar` (layer 2) | ±600 m | 1024 | 1.17 m/texel | đất, đá, landmark |
+
+**Tách theo LAYER, không theo khoảng cách** — layer tĩnh nên mép ghép không
+trôi theo người chơi. Mỗi vật thể chỉ bật **một** layer ánh sáng, nên không bao
+giờ bị chiếu sáng đôi. `hemi.layers.enableAll()` — nếu không, vật thể chỉ nhận
+đúng một nguồn trong hai sẽ thành mảng tối.
+
+### ⚠️ Bẫy đã gặp
+
+1. **`markFar()` phải bỏ qua đèn.** Bản đầu gọi `enable(2)` cho mọi thứ trong
+   scene và đã bật layer cho chính các đèn: `sun` đổi `mask 2 → 6`, tức nó sáng
+   cho cả hai lớp → **mọi vật thể lớp xa bị chiếu sáng đôi**. Layer quyết định
+   *vật thể nào* được đèn nào soi, đèn không tự thuộc về lớp nào.
+2. **Đèn gắn trên xe phải theo lớp của xe.** `keyLight`/`fillLight` ở tay Mèo
+   Vàng rơi vào layer 0 trong khi xe ở layer 1 → tay chìm tối. Beacon → layer 2.
+3. **Đừng đổ bóng cho vật thể nhỏ hơn độ phân giải.** Đá 0.8–2.1m so với
+   1.17 m/texel của lớp xa → bóng không phân giải nổi, xuất hiện thành **tam
+   giác đen nhọn** rải rác trên mặt đất. Quy tắc chung, không chỉnh riêng.
+4. **Hai hệ cùng ghi một thuộc tính** (xem §12) — `applyTime()` từng ghi đè màu
+   fog, đã bỏ; `updateAtmosphere()` là chủ sở hữu.
+
+### Bảng đồ vùng ảnh: thời gian mặc định đã sửa
+
+`timeOfDay = 0` **không phải bình minh**:
+```
+t=0.00 → sunH=-1  NỬA ĐÊM      t=0.50 → sunH=+1  TRƯA
+t=0.25 → sunH= 0  BÌNH MINH    t=0.75 → sunH= 0  HOÀNG HÔN
+```
+(sunH = sin(t·2π − π/2)). Mặc định cũ đặt mặt trời **220 m dưới mặt đất**.
+Nay dùng `0.33`. Dùng `__yc.setTime(t)` khi chụp ảnh — nếu không mỗi lần chụp
+có thể rơi vào thời điểm khác và không so sánh được.

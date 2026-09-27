@@ -74,7 +74,12 @@ let collected = JSON.parse(localStorage.getItem(STORAGE_KEY+'_paws')||'[]');
 let distance = parseFloat(localStorage.getItem(STORAGE_KEY+'_dist')||'0');
 let visitedBiomes = new Set(JSON.parse(localStorage.getItem(STORAGE_KEY+'_biomes')||'[]'));
 let photoMode = false;
-let timeOfDay = 0; // 0 dawn, 0.5 noon, 1 dusk
+// GIÁ TRỊ ĐÚNG theo công thức sunH = sin(t*2π - π/2):
+//   t=0.00 → sunH=-1  NỬA ĐÊM      t=0.50 → sunH=+1  TRƯA
+//   t=0.25 → sunH= 0  BÌNH MINH    t=0.75 → sunH= 0  HOÀNG HÔN
+// Comment cũ ghi "0 dawn, 0.5 noon, 1 dusk" là SAI, và timeOfDay=0 khiến game
+// luôn khởi động ở nửa đêm (mặt trời thấp hơn mặt đất 220m) nên cảnh tối om.
+let timeOfDay = 0.33;   // sáng sớm: nắng vừa lên, đủ sáng mà vẫn có bóng dài
 let targetBiomeIdx = 0;
 let freeCam = false;
 let discovered = new Set(JSON.parse(localStorage.getItem(DISCOVERED_KEY) || '[]'));
@@ -134,9 +139,14 @@ function applyGraphicsPreset(name, save){
   renderer.shadowMap.enabled = wantShadow;
   if (wantShadow) {
     sun.shadow.mapSize.set(g.shadow, g.shadow);
+  // Lớp xa dùng nửa độ phân giải: nó phủ 600m nên cần độ mịn hơn nhưng không
+  // cần bằng lớp gần; giữ nguyên phân bổ ngân sách cho lớp gần.
+  sunFar.shadow.mapSize.set(Math.max(512, g.shadow/2), Math.max(512, g.shadow/2));
     if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
+  if (sunFar.shadow.map) { sunFar.shadow.map.dispose(); sunFar.shadow.map = null; }
   }
   sun.castShadow = wantShadow;
+  sunFar.castShadow = wantShadow;
   gfxShadowOn = wantShadow;
   // ĐỔI shadowMap.enabled lúc chạy BẮT BUỘC phải yêu cầu vật liệu biên dịch lại,
   // nếu không shader vẫn giả định có shadow → hiển thị sai (thiếu bóng/đủ bóng
@@ -183,9 +193,81 @@ sun.position.set(300, 400, 100);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048,2048);
 sun.shadow.camera.near = 1; sun.shadow.camera.far = 1400;
-sun.shadow.camera.left=-600; sun.shadow.camera.right=600; sun.shadow.camera.top=600; sun.shadow.camera.bottom=-600;
-sun.shadow.bias = -0.0005;
+// ── Task 2.3: shadow camera BÁM THEO NGƯỜI CHƠI ──
+// Trước đây: hộp ortho 1200×1200 tĩnh, tâm ở gốc toạ độ.
+//  + Bản đồ rộng 1400m nhưng hộp chỉ ±600m → người chơi ở rìa bản đồ rơi
+//    NGOÀI hộp shadow, mất bóng hoàn toàn.
+//  + 1200m / 2048 texel = 0.586 m mỗi texel. Mèo Vàng cao ~1m → bóng xe chỉ
+//    được ~1.7 texel, nhòe thành vệt.
+// Nay: hộp ±SHADOW_FOLLOW_R quanh người chơi, cùng mapSize.
+// 75m / 2048 = 0.037 m mỗi texel → mượt hơn 16×, và luôn bao trọn người chơi.
+const SHADOW_FOLLOW_R = 40;
+sun.shadow.camera.left  =-SHADOW_FOLLOW_R; sun.shadow.camera.right = SHADOW_FOLLOW_R;
+sun.shadow.camera.top   = SHADOW_FOLLOW_R; sun.shadow.camera.bottom=-SHADOW_FOLLOW_R;
+sun.shadow.camera.updateProjectionMatrix();
+// normalBias: terrain nay da co normal map, mat phang nghieng → acnhe ghe,
+// phai day (khong phai bias) thi moi dung. Gia tri ~0.05m cho san 8.75m/cell.
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.05;
+// Blur nhẹ: PCFSoft đã lọc, radius chỉ giúp bóng mềm ở cạnh mà không nhòe tim bóng
+sun.shadow.radius = 2;
+// sun.target mặc định là (0,0,0) và KHÔNG nằm trong scene — dùng thì nên thêm
+// vào scene, nếu không ma trận thế giới của nó không được cập nhật.
+const sunTarget = new THREE.Object3D();
+scene.add(sunTarget);
+sun.target = sunTarget;
 scene.add(sun);
+
+// ── CASCADE 2 LỚP (Task 2.3, phương án A) ──
+// Một hộp shadow duy nhất KHÔNG thỏa cả hai đồng thời: hộp hẹp → sắc nhưng mép
+// cắt rõ; hộp rộng → phủ hết nhưng thô. Nên tách theo LAYER, không theo khoảng
+// cách — layer là tĩnh, nên mép ghép không trôi theo người chơi.
+//
+//   layer 1 (sun)    : ±40m  / 2048 → xe + Mèo Vàng. 40/2048 = 0.020 m/texel
+//   layer 2 (sunFar) : ±600m / 1024 → địa hình, đá, landmark. 1.17 m/texel
+//
+// Mỗi vật thể chỉ bật đúng MỘT layer ánh sáng → không bao giờ bị chiếu sáng
+// đôi. Camera vẫn thấy hết vì mọi object đều giữ layer 0.
+sun.layers.set(1);
+const sunFar = new THREE.DirectionalLight(0xfff0d0, 1.6);
+sunFar.position.set(300, 400, 100);
+sunFar.castShadow = true;
+sunFar.shadow.mapSize.set(1024, 1024);
+sunFar.shadow.camera.near = 1; sunFar.shadow.camera.far = 1400;
+const SHADOW_FAR_R = 600;
+sunFar.shadow.camera.left=-SHADOW_FAR_R; sunFar.shadow.camera.right=SHADOW_FAR_R;
+sunFar.shadow.camera.top =SHADOW_FAR_R; sunFar.shadow.camera.bottom=-SHADOW_FAR_R;
+sunFar.shadow.camera.updateProjectionMatrix();
+// Lưới thưa hơn nên phải đẩy vệt ra xa hơn, nếu không bóng mờ thành vệt đen
+sunFar.shadow.bias = -0.0009;
+sunFar.shadow.normalBias = 0.30;
+sunFar.shadow.radius = 3;
+const sunFarTarget = new THREE.Object3D();
+scene.add(sunFarTarget);
+sunFar.target = sunFarTarget;
+sunFar.layers.set(2);
+scene.add(sunFar);
+// Ánh sáng môi trường phải chiếu MỌI layer, nếu không các vật thể chỉ nhận
+// đúng một nguồn trong hai nguồn sẽ thành mảng tối.
+hemi.layers.enableAll();
+
+/**
+ * Đánh dấu object thuộc lớp ánh sáng XA (nhận bóng từ sunFar).
+ *
+ * CHỈ áp cho mesh. Bản đầu gọi enable(2) cho MỌI thứ trong scene và đã bắt
+ * được chính các đèn: sun bị đổi mask 2 → 6, tức nó sáng cho CẢ hai lớp, và
+ * mọi vật thể lớp xa bị chiếu sáng đôi (sun + sunFar cộng dồn) → màu nhạt, mờ.
+ * Đèn không được tự bật layer: layer quyết định vật thể nào được đèn nào soi.
+ */
+function markFar(obj){
+  if (obj.isLight || obj.isCamera) return obj;      // đèn/camera: giữ nguyên layer
+  if (obj.isMesh || obj.isInstancedMesh || obj.isPoints || obj.isLine) obj.layers.enable(2);
+  if (obj.traverse) obj.traverse(o=>{
+    if (o.isLight || o.isCamera) return;
+    if (o.isMesh || o.isInstancedMesh || o.isPoints || o.isLine) o.layers.enable(2);
+  });
+  return obj;
+}
 const SUN_BASE_I=1.6, AMB_BASE_I=0.85;
 
 // Sky dome
@@ -654,6 +736,7 @@ function buildLandmark(kind, x, z, scale){
   const topY = (kind==='mesa' ? 17*scale : kind==='arch' ? 30*scale : kind==='spire' ? 66*scale : 22*scale);
   bx.position.set(0, topY, 0); g.add(bx);
   const halo = new THREE.PointLight(0xffb060, 6, 120*scale, 2);
+halo.layers.set(2);   // beacon thuộc phong cảnh (lớp xa)
   halo.position.copy(bx.position); g.add(halo);
 
   g.userData = { kind, x, z, beacon: bx, halo, baseY: y, topY };
@@ -672,6 +755,151 @@ buildLandmark('spire',  64, 292, 1.25);
 buildLandmark('mesa', -108, 336, 1.40);
 buildLandmark('arch',  332, 176, 0.85);
 console.info('[landmark] dựng', landmarks.length, 'landmark');
+// ════════════════════════════════════════════════════════════════════════════
+// VẬT LIỆU PBR THỦ TỤC — Phase 2 Task 2.2
+//
+// Review ưu tiên #1: "Rover + mèo + camera — người chơi nhìn chúng MỌI LÚC".
+// Nhưng: dự án static-first, không có pipeline DCC (Blender/bake glTF), nên
+// thay vì mang asset glTF ngoài, ta nâng chất lượng bằng vật liệu PBR thủ tục —
+// cùng bộ công cụ đã dùng cho terrain, nên nhất quán và không phụ thuộc asset.
+//
+// Ba thứ tạo cảm giác "premium" trên bề mặt kim loại sơn:
+//   1. clearcoat    → lớp trong suốt tách biệt, cho highlight sắc trên sơn màu
+//   2. roughnessMap → không bao giờ đồng đều toàn bộ vật liệu
+//   3. xước + mòn cạnh + bụi bám → vật thể có "dấu sử dụng"
+//
+// Lưu ý: mọi dấu phải TẤT ĐỊNH (seed cố định) — nếu Math.random() thì mỗi
+// lần tải lại vật liệu đổi, và bản ghi số trong probe trở nên vô nghĩa.
+// ════════════════════════════════════════════════════════════════════════════
+// (dùng lại mulberry32() đã khai báo ở khối mật độ môi trường — tránh khai báo trùng)
+/**
+ * Sinh roughnessMap + normalMap cho vật liệu kim loại sơn / nhựa kỹ thuật.
+ * @param {object} o
+ * @param {number} o.seed      seed tất định
+ * @param {number} o.rough     roughness cơ sở (0..1)
+ * @param {number} o.scratch   cường độ vệt xước
+ * @param {number} o.dust      lượng bụi bám
+ * @param {number} o.wear      mòn cạnh / sử dụng
+ * @param {number} o.grain     độ mịn bề mặt
+ */
+function makeSurfaceMaps(o){
+  const S = 256;
+  const rnd = mulberry32(o.seed ?? 1337);
+  const rough = o.rough ?? 0.4, scratch = o.scratch ?? 0.5;
+  const dust = o.dust ?? 0.3, wear = o.wear ?? 0.35, grain = o.grain ?? 0.5;
+
+  const hC = document.createElement('canvas'); hC.width = hC.height = S;
+  const hx = hC.getContext('2d');
+  hx.fillStyle = '#808080'; hx.fillRect(0,0,S,S);
+
+  // 1) Vệt xước: đường thẳng mảnh, hướng ngẫu nhiên, mật độ thưa
+  const nScr = Math.floor(26 * scratch) + 6;
+  for (let i=0;i<nScr;i++){
+    const x = rnd()*S, y = rnd()*S, a = rnd()*Math.PI*2, len = 14 + rnd()*70;
+    hx.strokeStyle = `rgba(${rnd()<0.5?40:200},0,0,${0.05 + rnd()*0.16})`;
+    hx.lineWidth = 0.6 + rnd()*1.5;
+    hx.beginPath(); hx.moveTo(x,y);
+    hx.lineTo(x + Math.cos(a)*len, y + Math.sin(a)*len); hx.stroke();
+    // Vẽ lặp ở mép để texture tile liền
+    hx.beginPath(); hx.moveTo(x-S,y); hx.lineTo(x-S+Math.cos(a)*len, y+Math.sin(a)*len); hx.stroke();
+    hx.beginPath(); hx.moveTo(x,y-S); hx.lineTo(x+Math.cos(a)*len, y-S+Math.sin(a)*len); hx.stroke();
+  }
+  // 2) Hạt mịn: nhiễu mọn
+  const img = hx.getImageData(0,0,S,S), d = img.data;
+  for (let i=0;i<d.length;i+=4){
+    const n = (rnd()-0.5) * 46 * grain;
+    d[i] = d[i+1] = d[i+2] = Math.max(0, Math.min(255, d[i] + n));
+  }
+  hx.putImageData(img,0,0);
+
+  // ── normalMap: lấy gradient từ trường cao ở trên ──
+  const hgt = new Float32Array(S*S);
+  for (let i=0;i<S*S;i++) hgt[i] = d[i*4]/255;
+  const nC = document.createElement('canvas'); nC.width = nC.height = S;
+  const nx = nC.getContext('2d');
+  const nImg = nx.createImageData(S,S), nd = nImg.data;
+  const STR = 2.6;
+  for (let y=0;y<S;y++) for (let x=0;x<S;x++){
+    const l = hgt[y*S + ((x-1+S)%S)], r = hgt[y*S + ((x+1)%S)];
+    const u = hgt[((y-1+S)%S)*S + x], dn = hgt[((y+1)%S)*S + x];
+    let vx = (l-r)*STR, vy = (u-dn)*STR, vz = 1;
+    const len = Math.hypot(vx,vy,vz); vx/=len; vy/=len; vz/=len;
+    const o2 = (y*S+x)*4;
+    nd[o2]   = (vx*0.5+0.5)*255;
+    nd[o2+1] = (vy*0.5+0.5)*255;
+    nd[o2+2] = (vz*0.5+0.5)*255;
+    nd[o2+3] = 255;
+  }
+  nx.putImageData(nImg,0,0);
+
+  // ── roughnessMap: roughness cơ sở + xước (bóng hơn) + bụi (nhám hơn) + mòn (bóng) ──
+  const rC = document.createElement('canvas'); rC.width = rC.height = S;
+  const rx = rC.getContext('2d');
+  const rImg = rx.createImageData(S,S), rd = rImg.data;
+  const dr = mulberry32((o.seed ?? 1337) + 91);
+  for (let y=0;y<S;y++) for (let x=0;x<S;x++){
+    const i = y*S+x, h = hgt[i];
+    // Bụi bám: các vệt mờ, tăng roughness mạnh
+    const blot = Math.max(0, Math.sin(x*0.031 + Math.sin(y*0.017)*2.2) * 0.5 + 0.5 - 0.45) / 0.55;
+    let r = rough;
+    r += (h - 0.5) * 0.30 * scratch;          // vệt xước dối hai chiều
+    r += blot * 0.42 * dust;                   // bụi rất nhám
+    r += (dr() - 0.5) * 0.06;                  // hạt mịn
+    r = Math.max(0.03, Math.min(1, r));
+    const o2 = i*4;
+    rd[o2] = rd[o2+1] = rd[o2+2] = r*255; rd[o2+3] = 255;
+  }
+  rx.putImageData(rImg,0,0);
+
+  const mk = (cv, cs)=>{ const t=new THREE.CanvasTexture(cv);
+    t.wrapS=t.wrapT=THREE.RepeatWrapping; t.colorSpace=cs||THREE.NoColorSpace;
+    t.anisotropy=4; return t; };
+  return { normalMap: mk(nC), roughnessMap: mk(rC) };
+}
+
+const _matCache = new Map();
+/**
+ * Vật liệu PBR "tự động" theo màu — thay cho MeshStandardMaterial phẳng.
+ * Dùng cho các mesh tạo inline: cùng màu = cùng material = ít draw call hơn.
+ */
+function autoMat(color, metalness=0.4, roughness=0.55, emissive=null, key=null){
+  const ck = key || ('auto'+color+'_'+metalness+'_'+roughness+(emissive?'_e':''));
+  if (_matCache.has(ck)) return _matCache.get(ck);
+  const maps = makeSurfaceMaps({ seed: (color*2654435761)>>>0, rough: roughness,
+    scratch: 0.45 + roughness*0.4, dust: 0.30 + roughness*0.6, wear: 0.30, grain: 0.6 });
+  maps.normalMap.repeat.set(2,2); maps.roughnessMap.repeat.set(2,2);
+  const m = new THREE.MeshPhysicalMaterial({
+    color, metalness, roughness,
+    normalMap: maps.normalMap, roughnessMap: maps.roughnessMap,
+    normalScale: new THREE.Vector2(0.6,0.6),
+    // clearcoat chỉ có ý nghĩa trên bề mặt sơn bóng, không phải vật liệu thô
+    clearcoat: roughness < 0.55 ? 0.7 : 0.12,
+    clearcoatRoughness: 0.15,
+  });
+  if (emissive !== null){ m.emissive = new THREE.Color(emissive); m.emissiveIntensity = 0.9; }
+  _matCache.set(ck, m);
+  return m;
+}
+/** Vật liệu hero: MeshPhysicalMaterial có clearcoat + bản đồ xước/bụi, có cache. */
+function heroMat(key, o){
+  if (_matCache.has(key)) return _matCache.get(key);
+  const maps = makeSurfaceMaps(o);
+  const n = maps.normalMap, r = maps.roughnessMap;
+  const rep = o.repeat ?? 2;
+  n.repeat.set(rep, rep); r.repeat.set(rep, rep);
+  const m = new THREE.MeshPhysicalMaterial({
+    color: o.color, metalness: o.metalness ?? 0.5, roughness: o.roughness ?? 0.4,
+    normalMap: n, roughnessMap: r,
+    normalScale: new THREE.Vector2(o.normalScale ?? 0.8, o.normalScale ?? 0.8),
+    clearcoat: o.clearcoat ?? 0.55,          // lớp sơn trong suốt
+    clearcoatRoughness: o.clearcoatRoughness ?? 0.18,
+    envMapIntensity: o.envMapIntensity ?? 0.8,
+  });
+  m.userData.surfaces = maps;
+  _matCache.set(key, m);
+  return m;
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // KHÍ QUYỂN THEO BIOME — Giai đoạn 1 P0 Task 1.6
 //
@@ -720,6 +948,33 @@ function setBiomeAtmosphere(biomeId){
   }
 }
 
+/**
+ * Task 2.3 — dịch cả hộp shadow theo người chơi.
+ * Cả sun.position LẪN sun.target phải dịch cùng một lượng, nếu không ánh sáng
+ * sẽ xoay theo hướng khác nhau mỗi khung (bóng rung/rất nhiễu).
+ */
+function updateShadowFollow(){
+  if (!renderer.shadowMap.enabled) return;
+  const px = playerPos.x, pz = playerPos.z;
+  const d = sun.position.clone().sub(sunTarget.position);   // hướng & độ dài hiện tại
+  const dist = d.length();
+  // far phải vượt quãng cách từ đèn tới người chơi, nếu không vật thể bị cắt khỏi
+  // frustum và biến mất bóng khi nghiêng nắng thấp.
+  const far = dist + 160;
+  sunTarget.position.set(px, 0, pz);
+  sunTarget.updateMatrixWorld();
+  sun.position.set(px + d.x, sun.position.y, pz + d.z);
+  sun.shadow.camera.near = 1; sun.shadow.camera.far = far;
+  sun.shadow.camera.updateProjectionMatrix();
+  // Lớp xa dùng CHUNG hướng với lớp gần, nếu không hai nguồn lệch nhau và bóng
+  // của cùng một vật sẽ chỉ ngược nhau.
+  sunFarTarget.position.set(px, 0, pz);
+  sunFarTarget.updateMatrixWorld();
+  sunFar.position.set(px + d.x, sun.position.y, pz + d.z);
+  sunFar.shadow.camera.near = 1; sunFar.shadow.camera.far = far;
+  sunFar.shadow.camera.updateProjectionMatrix();
+}
+
 function updateAtmosphere(dt){
   // Hệ số lerp: ~1.2s để đổi màu, nhưng phải tương đối độc lập framerate.
   const k = 1 - Math.exp(-dt * 3.2);
@@ -741,6 +996,7 @@ function updateAtmosphere(dt){
   scene.fog.color.copy(_atmoSky);
   // Mặt trời & ánh sáng bị bụi hấp thụ: xanh/lam dịu dần, cực lạnh hơn.
   sun.color.lerp(_sunA.setHex(lastBiomeId==='storm' ? 0xd8a070 : 0xfff0d0).lerp(_sunB.setHex(0xd8906a), s), k);
+  sunFar.color.copy(sun.color);   // hai lớp cùng màu, nếu không cảnh bị hai tông
   hemi.color.lerp(_sunA.setHex(lastBiomeId==='polar' ? 0xdce8f0 : 0xffd8b0).lerp(_sunB.setHex(0xc98a5a), s), k);
   hemi.groundColor.lerp(_sunA.setHex(lastBiomeId==='polar' ? 0x4a5a68 : 0x1a0f0a).lerp(_sunB.setHex(0x2a1208), s), k);
 }
@@ -772,8 +1028,13 @@ const envMatSilt = new THREE.MeshStandardMaterial({ color:0xbb7a45, roughness:0.
 const envLayers = [
   // ĐÁ LỚN — tạo silhouette giữa cảnh (không lấn át landmark)
   { name:'boulder', geo:new THREE.DodecahedronGeometry(1,0), mat:envMat,    sMin:2.4, sMax:5.2, n: 260, y:0.32, shadow:true  },
-  // ĐÁ VỪA — mật độ chính, đọc được ở 60m
-  { name:'rock',    geo:new THREE.DodecahedronGeometry(1,0), mat:envMatLit, sMin:0.8, sMax:2.1, n: 900, y:0.30, shadow:true  },
+  // ĐÁ VỪA — mật độ chính, đọc được ở 60m.
+  // shadow:false — lớp xa dùng 1024 texel phủ ±600m = 1.17 m/texel, nên đá 0.8m
+  // nhỏ hơn MỘT texel: bóng của nó không phân giải nổi và xuất hiện thành các
+  // TAM GIÁC ĐEN NHỌN rải rác trên mặt đất (đã thấy trong ảnh). Không dùng
+  // texel shadow cho vật thể nhỏ hơn độ phân giải — đây là quy tắc chung, không
+  // phải chỉnh riêng. Chỉ đá lớn (2.4–5.2m ≈ 2–4 texel) mới đáng đổ bóng.
+  { name:'rock',    geo:new THREE.DodecahedronGeometry(1,0), mat:envMatLit, sMin:0.8, sMax:2.1, n: 900, y:0.30, shadow:false },
   // VỤN — chi tiết viền, cự ly gần
   // vụn: TETRA (4 tam giác) thay DODECA (36 tam giác) — ở cỡ 0.16–0.55m người
   // chơi không phân biệt được, nhưng tiết kiệm ~96k triangles mỗi khung hình.
@@ -986,7 +1247,7 @@ function updateContactShadows(){
     m.position.set(wx, gh+0.035, wz);
     m.scale.set(s, s*0.72, 1);
     m.visible = lift < 0.75;
-    m.material.opacity = 0.55*(1-Math.min(1, lift/0.75));
+    m.material.opacity = 0.42*(1-Math.min(1, lift/0.75));
   }
   for(let i=n;i<CONTACT_MAX;i++) contactPool[i].visible=false;
 }
@@ -1057,12 +1318,30 @@ function buildVehicle(type){
   vRefs.wheels.length=0; vRefs.scarves.length=0;
   vRefs.dish=vRefs.mast=vRefs.tail=vRefs.head=vRefs.rim=null; vRefs.arms=[];
   const g=new THREE.Group();
-  const wheelMat=new THREE.MeshStandardMaterial({color:0x1a1a1a, roughness:0.9});
-  const frameMat=new THREE.MeshStandardMaterial({color:0xffcc33, metalness:0.5, roughness:0.35});
-  const chrome=new THREE.MeshStandardMaterial({color:0xbfc7d0, metalness:0.85, roughness:0.25});
-  // shadow disc
-  const shadow=new THREE.Mesh(new THREE.CircleGeometry(2.2,18), new THREE.MeshBasicMaterial({color:0x000000, transparent:true, opacity:0.14, depthWrite:false}));
-  shadow.rotation.x=-Math.PI/2; shadow.position.y=0.02; shadow.renderOrder=-1; g.add(shadow);
+  // Phase 2 Task 2.2 — vật liệu PBR có clearcoat + xước/bụi, thay 4 material phẳng.
+  // clearcoat tách lớp sơn khỏi kim loại nền: highlight sắc, trông mới thay vì
+  // nhựa dẻo. roughnessMap phá vỡ mặt phẳng đơn sắc của material cũ.
+  const wheelMat=heroMat('wheel', {color:0x1a1a1a, metalness:0.15, roughness:0.86,
+      scratch:0.75, dust:1.0, wear:0.5, grain:0.9, clearcoat:0.10, repeat:3});
+  const frameMat=heroMat('frame', {color:0xffc227, metalness:0.42, roughness:0.34,
+      scratch:0.55, dust:0.55, wear:0.42, grain:0.6, clearcoat:0.85,
+      clearcoatRoughness:0.12, repeat:2});
+  const chrome=heroMat('chrome', {color:0xc4ccd6, metalness:0.92, roughness:0.20,
+      scratch:0.85, dust:0.22, wear:0.30, grain:0.45, clearcoat:0.35, repeat:2});
+  // Sơn kỹ thuật tối (thân vỏ rover) — sạch hơn, bám bụi ít hơn vì có mái che
+  const hullMat=heroMat('hull', {color:0xd8d2c8, metalness:0.35, roughness:0.46,
+      scratch:0.40, dust:0.40, wear:0.30, grain:0.55, clearcoat:0.70, repeat:2});
+  // Vỏ tối (panel, gầm) — nhám hơn, không sơn bóng
+  const panelMat=heroMat('panel', {color:0x2a2f36, metalness:0.55, roughness:0.68,
+      scratch:0.60, dust:0.65, wear:0.35, grain:0.75, clearcoat:0.25, repeat:2});
+  // Áo phủ cáo bọc dây cáp / mềm
+  const bootMat=heroMat('boot', {color:0x121418, metalness:0.08, roughness:0.88,
+      scratch:0.30, dust:0.85, wear:0.25, grain:0.9, clearcoat:0.05, repeat:4});
+  // Đĩa bóng dưới xe: trước đây r=2.2 / opacity 0.14. Khi đã có contact shadow
+  // THEO TỪNG BÁNH (Task 1.3) thì đĩa này chỉ còn làm vệt bóng to và đặc,
+  // và nó che luôn tiếp xúc bánh-mặt đất. Giảm còn lớp nền rất mờ.
+  const shadow=new THREE.Mesh(new THREE.CircleGeometry(1.7,20), new THREE.MeshBasicMaterial({color:0x000000, transparent:true, opacity:0.055, depthWrite:false}));
+  shadow.rotation.x=-Math.PI/2; shadow.position.y=0.015; shadow.renderOrder=-1; g.add(shadow);
   let body;
   if(type==='bike'){
     body=new THREE.Group();
@@ -1086,7 +1365,7 @@ function buildVehicle(type){
     // (thay thế "hộp + khối xanh" cũ: giỏ mây trông như thùng gỗ, cá là
     //  khối tròn vô nghĩa không ai hiểu)
     const basket=new THREE.Group();
-    const wicker=new THREE.MeshStandardMaterial({color:0xc99a5b, roughness:0.9});
+    const wicker=autoMat(0xc99a5b, 0.4, 0.9);
     // nền giỏ + 4 vách
     const bFloor=new THREE.Mesh(new THREE.BoxGeometry(0.46,0.03,0.38), wicker);
     bFloor.position.y=-0.15; basket.add(bFloor);
@@ -1099,34 +1378,34 @@ function buildVehicle(type){
       const y=-0.06+r*0.075;
       for(const [dx,dz,ry] of [[0,0.195,0],[-0.235,0,Math.PI/2],[0,-0.195,0],[0.235,0,Math.PI/2]]){
         const band=new THREE.Mesh(new THREE.BoxGeometry(0.47,0.018,0.032),
-              new THREE.MeshStandardMaterial({color:0xa87a42, roughness:0.9}));
+              autoMat(0xa87a42, 0.4, 0.9));
         band.position.set(dx,y,dz); band.rotation.y=ry; basket.add(band);
       }
     }
     // quai treo lên ghi đông
     for(const dz of [0.15,-0.15]){
-      const handle=new THREE.Mesh(new THREE.TorusGeometry(0.10,0.014,5,12,Math.PI), new THREE.MeshStandardMaterial({color:0x9c6f3c, roughness:0.9}));
+      const handle=new THREE.Mesh(new THREE.TorusGeometry(0.10,0.014,5,12,Math.PI), autoMat(0x9c6f3c, 0.4, 0.9));
       handle.position.set(0,0.16,dz); handle.rotation.y=Math.PI/2; basket.add(handle);
     }
     // túi ngủ cuộn (xanh Sao Hỏa) nằm trong giỏ
     const bag=new THREE.Mesh(new THREE.CapsuleGeometry(0.085,0.26,4,12),
-          new THREE.MeshStandardMaterial({color:0x3fb0d8, roughness:0.75}));
+          autoMat(0x3fb0d8, 0.4, 0.75));
     bag.rotation.z=Math.PI/2; bag.position.set(0.02,0.02,0.02); basket.add(bag);
     for(const dz of [-0.09,0.09]){                       // dây buộc túi
       const strap=new THREE.Mesh(new THREE.TorusGeometry(0.088,0.011,5,12),
-            new THREE.MeshStandardMaterial({color:0xe23c2e, roughness:0.8}));
+            autoMat(0xe23c2e, 0.4, 0.8));
       strap.position.set(0.02,0.02,dz); strap.rotation.y=Math.PI/2; basket.add(strap);
     }
     // bình nước bạc chụp lên thành giỏ
     const canteen=new THREE.Mesh(new THREE.CylinderGeometry(0.052,0.052,0.17,12),
-          new THREE.MeshStandardMaterial({color:0xd6dbe2, roughness:0.3, metalness:0.8}));
+          autoMat(0xd6dbe2, 0.8, 0.3));
     canteen.position.set(-0.15,0.08,-0.14); basket.add(canteen);
     const cap=new THREE.Mesh(new THREE.CylinderGeometry(0.028,0.032,0.035,8),
-          new THREE.MeshStandardMaterial({color:0xe23c2e, roughness:0.6}));
+          autoMat(0xe23c2e, 0.4, 0.6));
     cap.position.set(-0.15,0.18,-0.14); basket.add(cap);
     // gương + ăngten gắn trên quai
     const mirror=new THREE.Mesh(new THREE.CylinderGeometry(0.032,0.032,0.012,12),
-          new THREE.MeshStandardMaterial({color:0xbfe6ff, roughness:0.05, metalness:0.9}));
+          autoMat(0xbfe6ff, 0.9, 0.05));
     mirror.position.set(0.24,0.22,-0.16); mirror.rotation.z=0.5; basket.add(mirror);
     basket.scale.setScalar(0.52); basket.position.set(1.30,0.66,0); basket.rotation.y=0.04;
     body.add(basket); vRefs.basket=basket;
@@ -1138,16 +1417,16 @@ function buildVehicle(type){
     g.add(body);
   } else if(type==='moto'){
     body=new THREE.Group();
-    const tank=new THREE.Mesh(new THREE.CapsuleGeometry(0.26,0.7,6,12), new THREE.MeshStandardMaterial({color:0xff3b2f, metalness:0.4, roughness:0.3}));
+    const tank=new THREE.Mesh(new THREE.CapsuleGeometry(0.26,0.7,6,12), autoMat(0xff3b2f, 0.4, 0.3));
     tank.rotation.z=Math.PI/2; tank.position.set(0.15,0.95,0); body.add(tank);
-    const seat=new THREE.Mesh(new THREE.BoxGeometry(1.0,0.16,0.42), new THREE.MeshStandardMaterial({color:0x1a1a1a, roughness:0.8})); seat.position.set(-0.35,1.12,0); body.add(seat);
+    const seat=new THREE.Mesh(new THREE.BoxGeometry(1.0,0.16,0.42), autoMat(0x1a1a1a, 0.4, 0.8)); seat.position.set(-0.35,1.12,0); body.add(seat);
     const fork=new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,0.85,8), chrome); fork.position.set(0.85,0.72,0); fork.rotation.z=-0.35; body.add(fork);
     // Ghi đông: thanh ngang + 2 tay cầm cong + nắp cao su
     const hbar=new THREE.Mesh(new THREE.CylinderGeometry(0.022,0.022,0.52,10), chrome);
     hbar.rotation.x=Math.PI/2; hbar.position.set(1.05,1.12,0); body.add(hbar);
     for(const dz of [0.24,-0.24]){
       const grip=new THREE.Mesh(new THREE.CylinderGeometry(0.030,0.030,0.13,10),
-            new THREE.MeshStandardMaterial({color:0x2a2a2e, roughness:0.9}));
+            autoMat(0x2a2a2e, 0.4, 0.9));
       grip.rotation.x=Math.PI/2; grip.position.set(1.05,1.12,dz); body.add(grip);
       const barEnd=new THREE.Mesh(new THREE.SphereGeometry(0.031,8,6), chrome);
       barEnd.position.set(1.05,1.12,dz*1.14); body.add(barEnd);
@@ -1157,9 +1436,9 @@ function buildVehicle(type){
       for(let s=0;s<4;s++){ const sp=new THREE.Mesh(new THREE.BoxGeometry(0.025,0.78,0.025), chrome); sp.rotation.z=s*Math.PI/4+0.4; w.add(sp);} w.position.set(x,0.45,0); w.userData.r=0.535; body.add(w); vRefs.wheels.push(w); return w; };
     mkW(-1.05); mkW(1.05);
     const pipe=new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.07,0.9,8), chrome); pipe.rotation.z=Math.PI/2-0.08; pipe.position.set(-0.55,0.55,0.3); body.add(pipe);
-    const lamp=new THREE.Mesh(new THREE.SphereGeometry(0.13,10,8), new THREE.MeshStandardMaterial({color:0xfff6a0, emissive:0xfff176, emissiveIntensity:0.9})); lamp.position.set(1.12,0.98,0); body.add(lamp);
+    const lamp=new THREE.Mesh(new THREE.SphereGeometry(0.13,10,8), autoMat(0xfff6a0, 0.4, 0.55, 0xfff176, "emis0xfff176_09")); lamp.position.set(1.12,0.98,0); body.add(lamp);
     // chắn bùn sau (bốc đầu chất chơi)
-    const fender=new THREE.Mesh(new THREE.TorusGeometry(0.5,0.05,6,12,Math.PI*0.9), new THREE.MeshStandardMaterial({color:0xff3b2f})); fender.position.set(-1.05,0.45,0); fender.rotation.y=Math.PI/2; fender.rotation.x=0.4; body.add(fender);
+    const fender=new THREE.Mesh(new THREE.TorusGeometry(0.5,0.05,6,12,Math.PI*0.9), autoMat(0xff3b2f, 0.4, 0.55)); fender.position.set(-1.05,0.45,0); fender.rotation.y=Math.PI/2; fender.rotation.x=0.4; body.add(fender);
     g.add(body);
   } else {
     body=new THREE.Group();
@@ -1171,26 +1450,26 @@ function buildVehicle(type){
     body.add(wheelRim); vRefs.rim=wheelRim;
     for(let s=0;s<3;s++){ const sp=new THREE.Mesh(new THREE.BoxGeometry(0.42,0.02,0.02), chrome);
       sp.position.copy(wheelRim.position); sp.rotation.x=s*Math.PI/3+0.5; body.add(sp); }
-    const chassis=new THREE.Mesh(new THREE.BoxGeometry(2.2,0.42,1.15), new THREE.MeshStandardMaterial({color:0xd9cfc0, metalness:0.3, roughness:0.5}));
+    const chassis=new THREE.Mesh(new THREE.BoxGeometry(2.2,0.42,1.15), autoMat(0xd9cfc0, 0.3, 0.5));
     chassis.position.set(0,1.02,0); body.add(chassis);
     // золотая foil belly
-    const foil=new THREE.Mesh(new THREE.BoxGeometry(2.0,0.1,1.0), new THREE.MeshStandardMaterial({color:0xffd54f, metalness:0.9, roughness:0.3})); foil.position.set(0,0.78,0); body.add(foil);
-    const cabin=new THREE.Mesh(new THREE.BoxGeometry(1.0,0.55,1.05), new THREE.MeshStandardMaterial({color:0x7ec8e3, transparent:true, opacity:0.55, roughness:0.08, metalness:0.1}));
+    const foil=new THREE.Mesh(new THREE.BoxGeometry(2.0,0.1,1.0), autoMat(0xffd54f, 0.9, 0.3)); foil.position.set(0,0.78,0); body.add(foil);
+    const cabin=new THREE.Mesh(new THREE.BoxGeometry(1.0,0.55,1.05), autoMat(0x7ec8e3, 0.1, 0.08));
     cabin.position.set(0.05,1.52,0); body.add(cabin); vRefs.cabin=cabin;
-    const deck=new THREE.Mesh(new THREE.BoxGeometry(0.9,0.07,1.0), new THREE.MeshStandardMaterial({color:0x12324a, metalness:0.6, roughness:0.35})); deck.position.set(-0.85,1.3,0); body.add(deck); // panel pin
+    const deck=new THREE.Mesh(new THREE.BoxGeometry(0.9,0.07,1.0), autoMat(0x12324a, 0.6, 0.35)); deck.position.set(-0.85,1.3,0); body.add(deck); // panel pin
     // mast camera
     const mast=new THREE.Group();
     const pole=new THREE.Mesh(new THREE.CylinderGeometry(0.035,0.035,0.8,6), chrome); pole.position.y=0.4; mast.add(pole);
-    const eyeBox=new THREE.Mesh(new THREE.BoxGeometry(0.34,0.16,0.14), new THREE.MeshStandardMaterial({color:0x222222})); eyeBox.position.y=0.82; mast.add(eyeBox);
-    for(const dz of [-0.05,0.05]){ const eye=new THREE.Mesh(new THREE.SphereGeometry(0.045,8,6), new THREE.MeshStandardMaterial({color:0x80deea, emissive:0x00bcd4, emissiveIntensity:0.8})); eye.position.set(0.18,0.82,dz); mast.add(eye); }
+    const eyeBox=new THREE.Mesh(new THREE.BoxGeometry(0.34,0.16,0.14), autoMat(0x222222, 0.4, 0.55)); eyeBox.position.y=0.82; mast.add(eyeBox);
+    for(const dz of [-0.05,0.05]){ const eye=new THREE.Mesh(new THREE.SphereGeometry(0.045,8,6), autoMat(0x80deea, 0.4, 0.55, 0x00bcd4, "emis0x00bcd4_08")); eye.position.set(0.18,0.82,dz); mast.add(eye); }
     mast.position.set(0.55,1.28,-0.42); body.add(mast); vRefs.mast=mast;
     // ăng-ten dish
     const dishG=new THREE.Group();
     const stick=new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,0.5,5), chrome); stick.position.y=0.25; dishG.add(stick);
-    const dish=new THREE.Mesh(new THREE.SphereGeometry(0.16,10,6,0,Math.PI*2,0,Math.PI*0.45), new THREE.MeshStandardMaterial({color:0xf5f5f5, side:THREE.DoubleSide})); dish.position.y=0.52; dish.rotation.x=2.4; dishG.add(dish);
+    const dish=new THREE.Mesh(new THREE.SphereGeometry(0.16,10,6,0,Math.PI*2,0,Math.PI*0.45), autoMat(0xf5f5f5, 0.4, 0.55)); dish.position.y=0.52; dish.rotation.x=2.4; dishG.add(dish);
     dishG.position.set(-0.9,1.26,0.45); body.add(dishG); vRefs.dish=dishG;
     // đèn pha
-    for(const dz of [0.35,-0.35]){ const l=new THREE.Mesh(new THREE.SphereGeometry(0.14,8,8), new THREE.MeshStandardMaterial({color:0xfff6a0, emissive:0xfff176, emissiveIntensity:0.95})); l.position.set(1.18,1.0,dz); body.add(l); }
+    for(const dz of [0.35,-0.35]){ const l=new THREE.Mesh(new THREE.SphereGeometry(0.14,8,8), autoMat(0xfff6a0, 0.4, 0.55, 0xfff176, "emis0xfff176_095")); l.position.set(1.18,1.0,dz); body.add(l); }
     // rocker-bogie 6 bánh
     const mkW=(x,z,armX)=>{
       const leg=new THREE.Group();
@@ -1212,22 +1491,21 @@ function buildVehicle(type){
   const cat=new THREE.Group();
 
   // ---------- Vật liệu ----------
-  const matFur   = new THREE.MeshStandardMaterial({color:0xffc93c, roughness:0.84});
-  const matFurD  = new THREE.MeshStandardMaterial({color:0xe2961c, roughness:0.86}); // sọc tabby
-  const matCream = new THREE.MeshStandardMaterial({color:0xfff3cf, roughness:0.88}); // bụng/mõm
-  const matPink  = new THREE.MeshStandardMaterial({color:0xff9db0, roughness:0.5});
-  const matWhite = new THREE.MeshStandardMaterial({color:0xf6f6ef, roughness:0.34, metalness:0.18});
+  const matFur   = autoMat(0xffc93c, 0.4, 0.84);
+  const matFurD  = autoMat(0xe2961c, 0.4, 0.86); // sọc tabby
+  const matCream = autoMat(0xfff3cf, 0.4, 0.88); // bụng/mõm
+  const matPink  = autoMat(0xff9db0, 0.4, 0.5);
+  const matWhite = autoMat(0xf6f6ef, 0.18, 0.34);
   const matGold  = new THREE.MeshPhysicalMaterial({color:0xffcb63, roughness:0.07, metalness:0.4,
                                                    transparent:true, opacity:0.34,
                                                    side:THREE.DoubleSide, depthWrite:false});
-  const matChrome= new THREE.MeshStandardMaterial({color:0xd6dbe2, roughness:0.28, metalness:0.85});
-  const matRed   = new THREE.MeshStandardMaterial({color:0xe23c2e, roughness:0.72});
-  const matEyeW  = new THREE.MeshStandardMaterial({color:0xfdfbf4, roughness:0.22});
-  const matIris  = new THREE.MeshStandardMaterial({color:0x5cc46e, roughness:0.18,
-                                                   emissive:0x0e3a1a, emissiveIntensity:0.4});
-  const matPupil = new THREE.MeshStandardMaterial({color:0x0a0a0a, roughness:0.1});
+  const matChrome= autoMat(0xd6dbe2, 0.85, 0.28);
+  const matRed   = autoMat(0xe23c2e, 0.4, 0.72);
+  const matEyeW  = autoMat(0xfdfbf4, 0.4, 0.22);
+  const matIris  = autoMat(0x5cc46e, 0.4, 0.18, 0x0e3a1a, "emis0x0e3a1a_04");
+  const matPupil = autoMat(0x0a0a0a, 0.4, 0.1);
   const matGloss = new THREE.MeshBasicMaterial({color:0xffffff});
-  const matDark  = new THREE.MeshStandardMaterial({color:0x4a3418, roughness:0.8});
+  const matDark  = autoMat(0x4a3418, 0.4, 0.8);
 
   // Trợ giác: cho một mesh (mặc định trục dọc +Y) chĩa theo vector chỉ định
   const _mUp=new THREE.Vector3(0,1,0), _mDir=new THREE.Vector3();
@@ -1377,7 +1655,7 @@ function buildVehicle(type){
   neckRing.rotation.x=Math.PI/2; neckRing.position.y=-0.285; hel.add(neckRing);
   // Đèn trạng thái + ăngten nằm trên đỉnh vỏ
   const led=new THREE.Mesh(new THREE.SphereGeometry(0.038,10,8),
-        new THREE.MeshStandardMaterial({color:0x7dff9c, emissive:0x22ff55, emissiveIntensity:1.5}));
+        autoMat(0x7dff9c, 0.4, 0.55, 0x22ff55, "emis0x22ff55_15"));
   led.position.set(-0.20,0.30,0.14); hel.add(led);
   const ant=new THREE.Mesh(new THREE.CylinderGeometry(0.012,0.012,0.21,5), matChrome);
   ant.position.set(-0.16,0.40,-0.12); ant.rotation.z=-0.35; ant.rotation.x=0.24; hel.add(ant);
@@ -1441,9 +1719,9 @@ function buildVehicle(type){
   // (xoay được ở vai) + bàn tay (xoay ở cổ tay) + mũi ên nhô ra. Nhờ vRefs
   // mà góc nhìn thứ nhất thấy rõ Mèo đang lái: cánh tay bám ghi đông, bàn tay
   // xoay theo vô-lăng, tay nhấp nhô khi xe lên xuống.
-  const armMat = new THREE.MeshStandardMaterial({color:0xffc93c, roughness:0.82});
-  const pawMat  = new THREE.MeshStandardMaterial({color:0xfff3cf, roughness:0.62});
-  const clawMat = new THREE.MeshStandardMaterial({color:0x3a2a18, roughness:0.5});
+  const armMat = autoMat(0xffc93c, 0.4, 0.82);
+  const pawMat  = autoMat(0xfff3cf, 0.4, 0.62);
+  const clawMat = autoMat(0x3a2a18, 0.4, 0.5);
   vRefs.arms = [];
   for(const side of [1,-1]){
     const shoulder = new THREE.Group();
@@ -1500,12 +1778,20 @@ function buildVehicle(type){
   cat.name='cat';
   // Đèn phụ gắn theo xe: giữ Mèo & cánh tay luôn đủ sáng khi nhìn từ góc
   // thứ nhất, tránh bóng tối đọc không ra hình dạng.
-  const keyLight=new THREE.PointLight(0xffd9a0, 1.15, 6, 2);
+  // Đèn gắn trên xe: phải thuộc LỚP GẦN, nếu không nó nằm ở layer 0 và không
+// chiếu được vật thể nào (xe đã chuyển sang layer 1) → tay Mèo chìm tối.
+const keyLight=new THREE.PointLight(0xffd9a0, 1.15, 6, 2);
+keyLight.layers.set(1);
   keyLight.position.set(0.55, 2.4, 0.15);
   g.add(keyLight);
   const fillLight=new THREE.PointLight(0xffb877, 0.55, 5, 2);
+fillLight.layers.set(1);
   fillLight.position.set(-0.5, 1.9, -0.5);
   g.add(fillLight);
+  // Lớp ánh sáng GẦN: gán tại đây (sau khi dựng xong) để không phụ thuộc
+  // thứ tự gọi so với markFar(scene) — nếu quên, xe sẽ thành mảng tối vì
+  // không nguồn ánh sáng nào chiếu layer 0.
+  g.traverse(o=>{ if(o.isMesh||o.isInstancedMesh||o.isPoints||o.isLine) o.layers.enable(1); });
   player.add(g);
 
   // ---- AUTO-CALIBRATE ride height --------------------------------------
@@ -1957,13 +2243,15 @@ function applyTime(){
   skyMat.uniforms.t.value=t;
   const sunH = Math.sin(t*Math.PI*2 - Math.PI/2);
   sun.position.set(300*Math.cos(t*Math.PI*2), 120+ sunH*340, 100);
+  sunFar.position.copy(sun.position);   // lớp xa đi cùng hướng với lớp gần
   sun.intensity = THREE.MathUtils.lerp(0.35, 1.6, THREE.MathUtils.clamp((sunH+0.5),0,1));
+  sunFar.intensity = sun.intensity;
   hemi.intensity = THREE.MathUtils.lerp(0.35, 0.9, THREE.MathUtils.clamp((sunH+0.7),0,1));
   stars.material.opacity = THREE.MathUtils.clamp(0.65 - sunH*0.8, 0, 0.65);
-  // fog color
-  const fogC = new THREE.Color().lerpColors(new THREE.Color(0x2a140a), new THREE.Color(0x1a0f0a), THREE.MathUtils.clamp(sunH,0,1));
-  scene.fog.color.copy(fogC);
-  renderer.setClearColor(fogC, 1);
+  // KHÔNG ghi màu fog ở đây: updateAtmosphere() đã sở hữu màu (Task 1.6) và chạy
+  // mỗi khung theo biome. Ghi đè ở đây là hai hệ tranh nhau — đúng lỗi đã dính
+  // với maybeStorm(). Clear color vẫn cần, nhưng lấy từ fog hiện hành.
+  renderer.setClearColor(scene.fog.color, 1);
 }
 
 function updateHint(){
@@ -2139,6 +2427,7 @@ function maybeStorm(now){
   // (nó biết cả biome lẫn stormLevel) — ở đây KHÔNG ghi đè, nếu không hai hệ
   // sẽ tranh nhau và hệ mới luôn thua vì chạy sau.
   sun.intensity = THREE.MathUtils.lerp(1.6, 0.5, s) * SUN_BASE_I;
+  sunFar.intensity = sun.intensity;   // hai lớp cùng cường độ, mỗi vật thể nhận đúng một
   hemi.intensity = THREE.MathUtils.lerp(0.85, 0.5, s) * AMB_BASE_I;
   stormLevelHud(s);
 }
@@ -2641,6 +2930,7 @@ function frame(now){
   // Khí quyển theo biome (Task 1.6): set đích khi đổi vùng, lerp mượt mỗi khung.
   setBiomeAtmosphere(biomeAt(playerPos.x, playerPos.z).biome.id);
   updateAtmosphere(dt);
+  updateShadowFollow();
   updateContactShadows();
   // Vệt bánh: thả theo quãng đường, không theo khung hình (tránh dày đặc khi đứng yên)
   if(Math.abs(speed)>0.01){
@@ -2823,6 +3113,15 @@ const loadIv=setInterval(()=>{
 }, 55);
 loadText.textContent='Đang dựng đồng bằng Arcadia và đánh thức Mèo Vàng...';
 
+// ═══ Gán layer ánh sáng cho cascade 2 lớp (Task 2.3) ═══
+// Gọi MỘT LẦN sau khi mọi vật thể đã được dựng và thêm vào scene.
+//  · Phong cảnh (đất, đá, hố, silt, landmark, núi xa) → layer 2, bóng từ sunFar
+//  · Xe + Mèo Vàng → layer 1, bóng sắc từ sun
+// Vật thể nào CHƯA gán thì rơi về layer 0 = không nguồn nào chiếu → thành mảng tối.
+markFar(scene);
+player.traverse(o=>{ o.layers.enable(1); });
+// Dust / sao / sky không cần ánh sáng nên giữ layer 0.
+
 // ═══ Áp preset đồ họa (gọi sau khi sun/dust/stars đã có) ═══
 applyGraphicsPreset(gfxName, false);
 
@@ -2920,4 +3219,4 @@ window.__yc={ scene, player, camera, renderer, BIOMES, POIS, heightAt, sampleHei
   },
 
   forceSettle(){ settleToGround(); player.position.copy(playerPos); player.rotation.set(targetPitch, -playerYaw, targetRoll, 'YXZ'); },
-  get hf(){ return HF; }, forceStorm(){ stormTarget=0.9; stormEndsAt=performance.now()+30000; stormBanner.style.display='flex'; }, galleryList, refreshGalleryCache, openDiscovery, saveState(){ save(); return { distance, collected, discovered:[...discovered], playTimeSec }; } };
+  get hf(){ return HF; }, setTime(t){ timeOfDay=t; applyTime(); return timeOfDay; }, get timeOfDay(){ return timeOfDay; }, forceStorm(){ stormTarget=0.9; stormEndsAt=performance.now()+30000; stormBanner.style.display='flex'; }, galleryList, refreshGalleryCache, openDiscovery, saveState(){ save(); return { distance, collected, discovered:[...discovered], playTimeSec }; } };
