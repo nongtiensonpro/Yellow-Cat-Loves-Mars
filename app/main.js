@@ -1262,6 +1262,76 @@ function updateShadowFollow(){
   sunFar.shadow.camera.updateProjectionMatrix();
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// GIỜ TRONG NGÀY — Phase 3 Task 3.2
+//
+// Trước đây `applyTime()` chỉ dịch mặt trời và đổi cường độ, còn MÀU hoàn toàn
+// thuộc về biome. Hệ quả: bình minh và hoàng hôn trông y hệt nhau, và giữa
+// đêm mặt trời vẫn trắng tanh — không khác "trưa" ngoài chỗ đứng.
+//
+// Nay có 4 mốc giờ (0 đêm · 0.25 bình minh · 0.5 trưa · 0.75 hoàng hôn) và
+// nội suy mượt. Mỗi mốc mang:
+//   sun/hemi  — màu + cường độ ánh sáng chính
+//   skyTint   — màu phủ lên bầu trời biome (amt = mức phủ)
+//   fogTint   — màu phủ lên sương mù biome
+//   stars     — độ mờ sao
+//
+// SỞ HỮU: updateAtmosphere() vẫn là nơi DUY NHẤT ghi màu sky/fog/sun, giống
+// Task 1.6. Lớp thời gian được TRỘN vào đó, không ghi đè. Thứ tự áp:
+// biome → giờ trong ngày → bão. Nhờ vậy bão vẫn thắng, và đổi giờ không phá
+// bão đang chạy.
+// ════════════════════════════════════════════════════════════════════════════
+const TIME_GRAD = [
+  // sunI / hemiI là HỆ SỐ so với SUN_BASE_I (1.6) và AMB_BASE_I (0.85), không phải
+  // cường độ tuyệt đối. Trước đây maybeStorm() gán `lerp(1.6,0.5,s) * SUN_BASE_I`
+  // mỗi khung — tức nhân 1.6 hai lần (2.56 thay vì 1.6) VÀ ghi đè gradient giờ,
+  // nên bình minh với trưa ra y hệt nhau. Nay cường độ do updateAtmosphere() sở
+  // hữu một mình, giá trị tuyệt đối = hệ số × hằng số nền.
+  { t:0.00, name:'Đêm',
+    sun:0x4a5f86, sunI:0.10, hemiI:0.31, hemiSky:0x30425e, hemiGnd:0x141c2a,
+    skyTint:0x0d1c38, skyAmt:0.80, fogTint:0x1a2740, fogAmt:0.72, stars:0.80 },
+  // Đo thật từ ảnh cho thấy bản đầu (sunI 0.98/0.88) cho đất sáng gần bằng trưa
+  // (Δ chỉ 3.1/255) — mốc giờ hỏng vì chỉ sát một mức, nhìn không ra khác biệt.
+  // Hạ cường độ + tăng mức phủ màu để 4 mốc tách hẳn nhau.
+  { t:0.25, name:'Bình minh',
+    sun:0xffb070, sunI:0.42, hemiI:0.45, hemiSky:0xffd0b4, hemiGnd:0x2e1c14,
+    skyTint:0xffa070, skyAmt:0.62, fogTint:0xffb890, fogAmt:0.56, stars:0.22 },
+  { t:0.50, name:'Trưa',
+    sun:0xfff0d0, sunI:1.00, hemiI:1.00, hemiSky:0xffd8b0, hemiGnd:0x1a0f0a,
+    skyTint:0xffffff, skyAmt:0.00, fogTint:0xffffff, fogAmt:0.00, stars:0.00 },
+  { t:0.75, name:'Hoàng hôn',
+    sun:0xff5a28, sunI:0.375, hemiI:0.40, hemiSky:0xffa878, hemiGnd:0x34190c,
+    skyTint:0xff4411, skyAmt:0.72, fogTint:0xff5a2a, fogAmt:0.64, stars:0.34 },
+];
+// Mốc nội suy, cấp phát một lần ở module scope (0 nội suy = chính bản thân mốc).
+const _tgSun = new THREE.Color(), _tgHemiSky = new THREE.Color(), _tgHemiGnd = new THREE.Color();
+const _tgSky = new THREE.Color(), _tgFog = new THREE.Color();
+let _tg = { sunI:1, hemiI:1, skyAmt:0, fogAmt:0, stars:0, name:'' };
+
+/** Nội suy 4 mốc giờ theo timeOfDay (0..1, quanh vòng). */
+function sampleTimeGrade(t){
+  const t1 = ((t % 1) + 1) % 1;
+  let a = TIME_GRAD[TIME_GRAD.length-1], b = TIME_GRAD[0], k = 0;
+  if (t1 < 0.25){ a = TIME_GRAD[0]; b = TIME_GRAD[1]; k = t1/0.25; }
+  else if (t1 < 0.50){ a = TIME_GRAD[1]; b = TIME_GRAD[2]; k = (t1-0.25)/0.25; }
+  else if (t1 < 0.75){ a = TIME_GRAD[2]; b = TIME_GRAD[3]; k = (t1-0.50)/0.25; }
+  else { a = TIME_GRAD[3]; b = TIME_GRAD[0]; k = (t1-0.75)/0.25; }
+  // bình minh tới hoàng hôn đi ngang qua "khuya" — cần mượt, nên dùng smoothstep
+  k = k*k*(3-2*k);
+  _tgSun.setHex(a.sun).lerp(_sunA.setHex(b.sun), k);
+  _tgHemiSky.setHex(a.hemiSky).lerp(_sunA.setHex(b.hemiSky), k);
+  _tgHemiGnd.setHex(a.hemiGnd).lerp(_sunA.setHex(b.hemiGnd), k);
+  _tgSky.setHex(a.skyTint).lerp(_sunA.setHex(b.skyTint), k);
+  _tgFog.setHex(a.fogTint).lerp(_sunA.setHex(b.fogTint), k);
+  _tg.sunI   = THREE.MathUtils.lerp(a.sunI,  b.sunI,  k);
+  _tg.hemiI  = THREE.MathUtils.lerp(a.hemiI, b.hemiI, k);
+  _tg.skyAmt = THREE.MathUtils.lerp(a.skyAmt, b.skyAmt, k);
+  _tg.fogAmt = THREE.MathUtils.lerp(a.fogAmt, b.fogAmt, k);
+  _tg.stars  = THREE.MathUtils.lerp(a.stars,  b.stars,  k);
+  _tg.name   = k < 0.5 ? a.name : b.name;
+  return _tg;
+}
+
 function updateAtmosphere(dt){
   // Hệ số lerp: ~1.2s để đổi màu, nhưng phải tương đối độc lập framerate.
   const k = 1 - Math.exp(-dt * 3.2);
@@ -1270,22 +1340,44 @@ function updateAtmosphere(dt){
   _atmoCur.hor.lerp(_atmoTo.hor, k);
   _atmoCur.fog.lerp(_atmoTo.fog, k);
   atmoDust += (atmoDustTo - atmoDust) * k;
+  // Lớp GIỜ TRONG NGÀY (Task 3.2): phủ tint lên màu biome đã nội suy.
+  // Lấy mẫu ở đây để luôn chạy trước khi dùng — không phụ thuộc applyTime()
+  // có được gọi hay không (đổi preset đồ họa hay gọi trực tiếp cũng đúng).
+  const tg = sampleTimeGrade(timeOfDay);
   // Bão phủ thêm lớp màu bụi mịn lên trên màu biome (tương phản giảm, đỏ lên).
   // Dùng hệ số stormLevel nên bão vẫn chạy trên mọi biome, không phải chỉ vùng storm.
   const s = typeof stormLevel === 'number' ? stormLevel : 0;
+  // Thứ tự áp: biome -> GIỜ TRONG NGÀY -> bão. Bão nằm ngoài cùng nên vẫn thắng,
+  // đổi giờ không phá vỡ cơn bão đang chạy.
   _atmoSky.copy(_atmoCur.top).lerp(_STORM_TOP, s);
+  if (tg.skyAmt > 0.001) _atmoSky.lerp(_tgSky, tg.skyAmt);
   skyMat.uniforms.top.value.copy(_atmoSky);
   _atmoSky.copy(_atmoCur.mid).lerp(_STORM_MID, s);
+  if (tg.skyAmt > 0.001) _atmoSky.lerp(_tgSky, tg.skyAmt*0.75);
   skyMat.uniforms.mid.value.copy(_atmoSky);
   _atmoSky.copy(_atmoCur.hor).lerp(_STORM_HOR, s);
+  if (tg.skyAmt > 0.001) _atmoSky.lerp(_tgSky, tg.skyAmt*0.55);
   skyMat.uniforms.horizon.value.copy(_atmoSky);
   _atmoSky.copy(_atmoCur.fog).lerp(_STORM_FOG, s);
+  // Task 3.2: trộn màu giờ vào sương mù (sau bão để bão vẫn là lớp trên cùng)
+  if (tg.fogAmt > 0.001) _atmoSky.lerp(_tgFog, tg.fogAmt);
   scene.fog.color.copy(_atmoSky);
   // Mặt trời & ánh sáng bị bụi hấp thụ: xanh/lam dịu dần, cực lạnh hơn.
-  sun.color.lerp(_sunA.setHex(lastBiomeId==='storm' ? 0xd8a070 : 0xfff0d0).lerp(_sunB.setHex(0xd8906a), s), k);
+  // Nền tảng theo biome + bão, rồi TRỘN màu giờ trong ngày (Task 3.2).
+  // Trộn chứ không gán: giữ được sắc lạnh của polar và sự dịch của bão.
+  _sunB.setHex(lastBiomeId==='storm' ? 0xd8a070 : 0xfff0d0).lerp(_sunA.setHex(0xd8906a), s);
+  sun.color.lerp(_sunB.lerp(_tgSun, tg.skyAmt*0.9), k);
   sunFar.color.copy(sun.color);   // hai lớp cùng màu, nếu không cảnh bị hai tông
-  hemi.color.lerp(_sunA.setHex(lastBiomeId==='polar' ? 0xdce8f0 : 0xffd8b0).lerp(_sunB.setHex(0xc98a5a), s), k);
-  hemi.groundColor.lerp(_sunA.setHex(lastBiomeId==='polar' ? 0x4a5a68 : 0x1a0f0a).lerp(_sunB.setHex(0x2a1208), s), k);
+  _sunB.setHex(lastBiomeId==='polar' ? 0xdce8f0 : 0xffd8b0).lerp(_sunA.setHex(0xc98a5a), s);
+  hemi.color.lerp(_sunB.lerp(_tgHemiSky, tg.skyAmt*0.8), k);
+  _sunB.setHex(lastBiomeId==='polar' ? 0x4a5a68 : 0x1a0f0a).lerp(_sunA.setHex(0x2a1208), s);
+  hemi.groundColor.lerp(_sunB.lerp(_tgHemiGnd, tg.skyAmt*0.6), k);
+  // Cường độ do mốc giờ quyết định (Task 3.2), bão làm tối thêm.
+  const wantSun = tg.sunI * SUN_BASE_I * (1 - s*0.55);
+  const wantHemi= tg.hemiI * AMB_BASE_I * (1 - s*0.35);
+  sun.intensity += (wantSun  - sun.intensity ) * k;
+  sunFar.intensity = sun.intensity;
+  hemi.intensity += (wantHemi - hemi.intensity) * k;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -2673,6 +2765,11 @@ addEventListener('keydown', e=>{
   if(k==='m') toggleMap();
   if(k==='p') togglePhoto();
   if(k==='l'){ timeOfDay=(timeOfDay+0.25)%1; applyTime(); }
+  // Phím 1-4: nhảy thẳng tới Đêm / Bình minh / Trưa / Hoàng hôn (Task 3.2)
+  if(k>='1' && k<='4' && !e.shiftKey && !e.ctrlKey && !e.metaKey
+     && document.activeElement===document.body){
+    setTimePreset(+k - 1);
+  }
   // Phím F: bật/tắt ô đo FPS + preset đồ họa. Cần khi người chơi muốn tự
   // xem máy mình chịu được bao nhiêu — không đoán giúp được, phải đo trên
   // phần cứng thật.
@@ -2744,17 +2841,36 @@ canvas.addEventListener('wheel', e=>{
   addEventListener('mouseup', ()=>{ if(active){ active=false; joyActive=false; joyVec.x=0; joyVec.y=0; stick.style.transform='translate(0,0)'; } });
 })();
 
+/** Nhảy tới 1 trong 4 mốc giờ (Task 3.2). Nội suy vẫn chạy trong
+ *  updateAtmosphere nên chuyển mốc không giật, chỉ mất ~1.2s để ổn định. */
+function setTimePreset(idx){
+  timeOfDay = ((idx % 4) + 4) % 4 * 0.25;
+  applyTime();
+  const n = TIME_GRAD[(idx%4+4)%4].name;
+  if (hudTime) hudTime.textContent = n;
+  showToast('\u{1F305}', `Giờ: ${n}`, n==='Đêm'
+    ? 'Mặt trời lặn hẳn dưới chân trời — chỉ còn ánh trăng lạnh và sao.'
+    : n==='Bình minh' ? 'Nắng đầu tiên ló lên, bóng đổ dài và ánh hồng nhạt trên mây.'
+    : n==='Trưa' ? 'Nắng đứng trên đỉnh đầu, bóng ngắn nhất và màu trung tính nhất.'
+    : 'Nắng xuống thấp, mọi thứ nghiêng sang đỏ và bóng đổ dài gấp đôi.');
+}
+
+// Nhãn giờ trên HUD. Cập nhật mỗi khung từ tên mốc gần nhất, nên đổi giờ bằng
+// bất kỳ cách nào (phím 1-4, nút L, hay setTime trong console) đều khớp.
+const hudTime = document.getElementById('hud-time');
+
 function applyTime(){
   const t=timeOfDay;
   // sky
   skyMat.uniforms.t.value=t;
   const sunH = Math.sin(t*Math.PI*2 - Math.PI/2);
+  const tg = sampleTimeGrade(t);
   sun.position.set(300*Math.cos(t*Math.PI*2), 120+ sunH*340, 100);
   sunFar.position.copy(sun.position);   // lớp xa đi cùng hướng với lớp gần
-  sun.intensity = THREE.MathUtils.lerp(0.35, 1.6, THREE.MathUtils.clamp((sunH+0.5),0,1));
-  sunFar.intensity = sun.intensity;
-  hemi.intensity = THREE.MathUtils.lerp(0.35, 0.9, THREE.MathUtils.clamp((sunH+0.7),0,1));
-  stars.material.opacity = THREE.MathUtils.clamp(0.65 - sunH*0.8, 0, 0.65);
+  // Cường độ ánh sáng KHÔNG tính tay ở đây nữa — thuộc mốc giờ (Task 3.2) và
+  // được nội suy mượt trong updateAtmosphere(), nên đổi giờ không bị giật.
+  // applyTime chỉ lo VỊ TRÍ (mặt trời phải đi ngay) + độ mờ sao theo giờ.
+  stars.material.opacity = tg.stars;
   // KHÔNG ghi màu fog ở đây: updateAtmosphere() đã sở hữu màu (Task 1.6) và chạy
   // mỗi khung theo biome. Ghi đè ở đây là hai hệ tranh nhau — đúng lỗi đã dính
   // với maybeStorm(). Clear color vẫn cần, nhưng lấy từ fog hiện hành.
@@ -2862,7 +2978,7 @@ document.getElementById('btn-shot').onclick=()=>{
   }catch(e){ console.warn('gallery save',e); }
   showToast('📸','Đã chụp ảnh!','Đã tải xuống & lưu vào Bộ Sưu Tập (🖼️).');
 };
-document.getElementById('btn-light').onclick=()=>{ timeOfDay=(timeOfDay+0.25)%1; applyTime(); };
+document.getElementById('btn-light').onclick=()=>{ setTimePreset(Math.round(timeOfDay/0.25)); };
 document.getElementById('btn-help').onclick=toggleHelp;
 // ---------- Phase 3 Wiring ----------
 document.getElementById('btn-journal').onclick=()=> openJournal('j-overview');
@@ -2930,12 +3046,13 @@ function maybeStorm(now){
   // Mật độ fog TÍNH TỪ FOG_BASE × preset, không hardcode — trước đây ghi cứng
   // 0.0012 mỗi khung nên vô hiệu hoá cả bản sửa cạnh terrain lộ (Task 1.6).
   scene.fog.density = FOG_BASE * (GFX_PRESETS[gfxName]?.fogMul ?? 1) * (1 + s*2.4);
-  // Cường độ ánh sáng: bão làm tối. MÀU thì do updateAtmosphere() sở hữu
-  // (nó biết cả biome lẫn stormLevel) — ở đây KHÔNG ghi đè, nếu không hai hệ
-  // sẽ tranh nhau và hệ mới luôn thua vì chạy sau.
-  sun.intensity = THREE.MathUtils.lerp(1.6, 0.5, s) * SUN_BASE_I;
-  sunFar.intensity = sun.intensity;   // hai lớp cùng cường độ, mỗi vật thể nhận đúng một
-  hemi.intensity = THREE.MathUtils.lerp(0.85, 0.5, s) * AMB_BASE_I;
+  // Cả MÀU lẫn CƯỜNG ĐỘ ánh sáng đều do updateAtmosphere() sở hữu (nó biết cả
+  // biome, cả giờ trong ngày, cả stormLevel) — ở đây KHÔNG ghi đè, nếu không hai
+  // hệ sẽ tranh nhau và hệ mới luôn thua vì chạy sau.
+  // KHÔNG gán sun/hemi.intensity ở đây (Task 3.2). updateAtmosphere() đã sở hữu
+  // cường độ: lấy hệ số theo giờ trong ngày × hằng số nền, rồi nhân (1-s*0.55) để
+  // bão làm tối. Ở đây gán lại bằng giá trị TUYỆT ĐỐI (và nhân 1.6 hai lần) là
+  // chủ sở hữu thứ hai — nó chạy sau nên luôn thắng, xoá sạch gradient giờ.
   stormLevelHud(s);
 }
 let _lastStorm=0;
@@ -3540,6 +3657,7 @@ function frame(now){
   hudBiome.textContent=bi.name;
   hudCoord.textContent=`${Math.round(playerPos.x)}, ${Math.round(playerPos.z)}`;
   hudSpeed.textContent=Math.round(speedKmh);
+  if (hudTime) hudTime.textContent = sampleTimeGrade(timeOfDay).name;
   hudPaws.textContent=collected.length;
   document.getElementById('j-dist') && (document.getElementById('j-dist').textContent=distance.toFixed(1));
   // minimap

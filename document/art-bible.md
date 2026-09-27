@@ -459,3 +459,51 @@ Tương tự: camera orbit tính từ **đáy hào** với `dist=26` bị chôn 
 ảnh đen 100%, nhưng đó là lỗi probe, không phải lỗi cảnh. Lùi ra
 `dist=120` là ảnh sáng bình thường. **Ảnh đen phải kiểm bằng cách lùi
 camera trước khi kết luận cảnh hỏng.**
+
+## 17. Giờ trong ngày (Task 3.2, 2026-09-27)
+
+`timeOfDay` chạy vòng tròn 0..1. Bốn mốc: **0.00 Đêm · 0.25 Bình minh · 0.50 Trưa · 0.75 Hoàng hôn**.
+Phím `1`–`4` nhảy thẳng tới từng mốc; nút 🌅 (phím `L`) xoay qua lại 4 mốc có tên.
+
+| Mốc | Mặt trời | `sunI` × | `hemiI` × | Màu trời phủ | Màu sương mù phủ | Sao |
+|---|---|---|---|---|---|---|
+| Đêm | `#4a5f86` lạnh | 0.100 | 0.31 | `#0d1c38` · 0.80 | `#1a2740` · 0.72 | 0.80 |
+| Bình minh | `#ffb070` đào | 0.420 | 0.45 | `#ffa070` · 0.62 | `#ffb890` · 0.56 | 0.22 |
+| Trưa | `#fff0d0` | 1.000 | 1.00 | — (không phủ) | — | 0.00 |
+| Hoàng hôn | `#ff5a28` đỏ sâu | 0.375 | 0.40 | `#ff4411` · 0.72 | `#ff5a2a` · 0.64 | 0.34 |
+
+`sunI`/`hemiI` là **hệ số so với `SUN_BASE_I` (1.6) và `AMB_BASE_I` (0.85)**, không phải cường độ tuyệt đối.
+Cường độ thực = hệ số × hằng số nền × `(1 - stormLevel·0.55)` (mặt trời) hoặc `× (1 - stormLevel·0.35)` (bán cầu).
+
+**Thứ tự lớp áp** (bắt buộc, không được đảo):
+```
+biome  →  giờ trong ngày  →  bão
+```
+Bão nằm ngoài cùng nên vẫn thắng, và đổi giờ không phá vỡ cơn bão đang chạy.
+
+### Sở hữu màu & cường độ
+
+`updateAtmosphere()` là chủ duy nhất của: màu sky (3 tầng), màu fog, màu `sun`/`sunFar`, màu `hemi`/`hemi.groundColor`,
+và **cường độ** `sun`/`sunFar`/`hemi`. Nó chạy mỗi khung và lấy mẫu giờ bằng `sampleTimeGrade()` ngay trong hàm
+— nên đổi giờ bằng bất kỳ cách nào (phím, nút, `setTime()` trong console) cũng cho kết quả như nhau.
+
+`applyTime()` chỉ lo **vị trí** mặt trời (phải đi ngay, không nội suy chậm) và độ mờ sao.
+
+### ⚠️ Bẫy đã gặp lần thứ ba: hai hệ cùng ghi một thuộc tính
+
+`maybeStorm()` từng gán `sun.intensity = lerp(1.6, 0.5, s) * SUN_BASE_I` **mỗi khung**. Hai hỏng cùng lúc:
+
+1. **Nhân đôi**: `1.6 × SUN_BASE_I (1.6) = 2.56` thay vì 1.6 — ánh sáng sáng hơn `dự định 60%` suốt từ trước.
+2. **Xoá sạch gradient giờ**: hệ chạy sau nên luôn thắng, khiến 4 mốc giờ ra y hệt nhau.
+
+Đo được trước khi sửa: bình minh và trưa lệch nhau Δ đất **4.0/255** — không nhìn ra khác biệt.
+Sau khi gỡ: Δ đất bình minh↔trưa = **98.4**, và cả 6 cặp mốc đều > 15.
+
+**Quy tắc:** bất kỳ thuộc tính nào của ánh sáng/sương mù/bầu trời cũng chỉ được **một** chủ sở hữu.
+Hệ nào cần biến đổi thì **biến đổi trong `updateAtmosphere()`**, tuyệt đối không gán từ hệ khác.
+
+Probe chốt: `tests/_probe_time.mjs` assert `sun.intensity` phải có **≥ 3 giá trị khác nhau** trong 4 mốc
+(`[0.16, 0.672, 1.6, 0.6]`) — nếu lỡ quay lại chủ sở hữu thứ hai thì probe báo đỏ chứ không im lặng.
+
+### Bảng đồ vùng ảnh mốc giờ
+- `tests/tg-dem.png` · `tests/tg-binhminh.png` · `tests/tg-trua.png` · `tests/tg-hoanghon.png`

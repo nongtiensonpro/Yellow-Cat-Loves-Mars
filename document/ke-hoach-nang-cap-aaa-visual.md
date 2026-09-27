@@ -167,11 +167,11 @@ Mỗi Phase có Definition of Done + Task nhỏ (2–5 phút/task, TDD khi có l
 
 **DoD:** Sky/atmosphere theo giờ+thời tiết; volumetric-looking light; animation graph; discovery presentation cinematic; performance budget đạt.
 
-### Task 3.1 — Chuẩn hóa art bible v2 + scale/palette lock
+### Task 3.1 — Chuẩn hóa art bible v2 + scale/palette lock  ✅ 27/09/2026 (`document/art-bible.md` §17)
 **Files:** `document/art-bible.md` (cập nhật)
 **Nội dung:** Khóa scale, palette, roughness range, lighting ref sau khi hero asset xong.
 
-### Task 3.2 — Sky/Atmosphere system theo giờ & thời tiết
+### Task 3.2 — Sky/Atmosphere system theo giờ & thời tiết  ✅ 27/09/2026 (4 mốc giờ, phím 1-4)
 **Files:** `app/main.js` (sky/atmosphere), `assets/textures/` (LUT nếu cần)
 **Nội dung:** Sun angle ảnh hưởng bóng/màu/fog; 3–4 preset thời gian (bình minh/trưa/hoàng hôn/đêm) + bão; sky LUT theo biome.
 
