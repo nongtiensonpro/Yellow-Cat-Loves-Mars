@@ -244,3 +244,46 @@ Ba map sinh từ **cùng một trường cao fbm** (tất định, không `Math.
   song song đều tăm tắp, lặp theo tile và nhìn rõ là hoa văn nhân tạo khi lái xa.
 - Kiểm bằng ảnh ở **3 khoảng cách** (3 m / 8 m / 11 m) — normal map chỉ thấy
   được gần, xa sẽ dày đặc thành nhiễu.
+
+## 12. Khí quyển & vệt bánh (sửa 27/09/2026)
+
+### Bảng khí quyển theo biome (mỗi vùng một chất khí quyển riêng)
+
+| Biome | trời zenith | trời mid | trời chân trời | fog | bụi |
+|---|---|---|---|---|---|
+| Arcadia | `#1a0f0a` | `#ff7a3d` | `#ffb07a` | `#c4713f` | 1.00 |
+| Valles | `#120806` | `#8e3416` | `#b05930` | `#8a4526` | 0.85 |
+| Olympus | `#241009` | `#d4662e` | `#f0a061` | `#b06036` | 0.90 |
+| Polar | `#2a3a4a` | `#d8c8b8` | `#f0e6da` | `#c8bcb0` | 0.45 |
+| Storm | `#1c0d06` | `#6d3311` | `#8f4c22` | `#6b3a1a` | 2.20 |
+
+Chuyển cảnh bằng **lerp mượt** `1 - exp(-dt*3.2)` (≈1.2s), không nhảy màu.
+
+### ⚠️ Bẫy đã gặp: hai hệ cùng ghi một thuộc tính
+
+`maybeStorm()` (hệ cũ) ghi `sun.color`, `skyMat.*`, `scene.fog.density`
+**mỗi khung hình**. Khi thêm khí quyển theo biome, hệ mới luôn thua vì chạy sau —
+và mật độ fog bị hardcode `0.0012` âm thầm vô hiệu hoá bản sửa cạnh terrain lộ.
+
+**Quy tắc bắt buộc:**
+1. **Một thuộc tính chỉ có một chủ sở hữu.** Ở đây `updateAtmosphere()` sở hữu
+   MÀU; `maybeStorm()` chỉ được điều biến CƯỜNG ĐỘ.
+2. Mọi hằng số vật lý đặt **một chỗ** (`FOG_BASE`, `GFX_PRESETS[].fogMul`) và
+   tính từ đó — **không hardcode** số trong vòng lặp.
+3. Bão vẫn chạy trên **mọi** biome: `updateAtmosphere` trộn thêm palette bão theo
+   `stormLevel`, thay vì bão chỉ hoạt động ở vùng storm.
+
+### Vệt bánh & contact shadow (Task 1.3)
+
+- **Contact shadow**: vệt tối mềm dưới **từng bánh**, neo theo cao độ đất thật;
+  bánh càng cao → vệt càng nhạt và rộng. Đây là thứ khiến phương tiện không
+  trông "lơ lửng" dù không xuyên đất.
+- **Vệt bánh**: ring buffer **760 ô**, thả mỗi **0.55 m** quãng đường (nhỏ hơn
+  bề rộng vệt 1.3 m → **liền mạch**), sống **46 s** rồi biến mất.
+- **Fade bằng THU NHỎ, không bằng alpha** — `InstancedMesh` dùng chung một material
+  nên không fade được từng ô riêng; thu nhỏ trông tự nhiên hơn và rẻ hơn.
+- Pool contact shadow: **mỗi vệt một material riêng** — `opacity` thuộc
+  `material`, đặt vào `mesh` không có tác dụng.
+- Lấy bánh **index 0 và 1** (trái/phải cùng trục). Rover có
+  `[[-1,0.68],[-1,-0.68],[1,0.68],[1,-0.68]]`; lấy `i+=2` là 0 và 2 → cùng
+  `z=+0.68` → chồng thành **một** vệt. Đã dính lỗi này một lần.

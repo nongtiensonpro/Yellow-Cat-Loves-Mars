@@ -176,8 +176,8 @@ const camera = new THREE.PerspectiveCamera(68, innerWidth/innerHeight, 0.1, 3000
 const camTarget = new THREE.Vector3();
 const camPos = new THREE.Vector3();
 
-const ambient = new THREE.HemisphereLight(0xffd8b0, 0x1a0f0a, 0.85);
-scene.add(ambient);
+const hemi = new THREE.HemisphereLight(0xffd8b0, 0x1a0f0a, 0.85);
+scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff0d0, 1.6);
 sun.position.set(300, 400, 100);
 sun.castShadow = true;
@@ -673,6 +673,79 @@ buildLandmark('mesa', -108, 336, 1.40);
 buildLandmark('arch',  332, 176, 0.85);
 console.info('[landmark] dựng', landmarks.length, 'landmark');
 // ════════════════════════════════════════════════════════════════════════════
+// KHÍ QUYỂN THEO BIOME — Giai đoạn 1 P0 Task 1.6
+//
+// Review: "bầu trời đỏ rất mạnh nhưng dễ làm toàn cảnh bị đơn sắc; foreground /
+// background chưa tách đủ lớp" và "fog cần đổi màu theo biome".
+// Mỗi biome có bảng màu riêng cho: trời (top/mid/horizon), fog, và hệ số
+// bão bụi. Chuyển cảnh bằng LERP mượt trong ~1.2s, không "nhảy" màu.
+//
+// Quy tắc (art-bible §5): fog LUÔN nhạt hơn hoặc bằng màu trời chân trời,
+// nếu tối hơn thì cạnh lưới terrain lộ (đã dính lỗi này một lần).
+// ════════════════════════════════════════════════════════════════════════════
+const BIOME_ATMO = {
+  arcadia:{ top:0x1a0f0a, mid:0xff7a3d, hor:0xffb07a, fog:0xc4713f, dust:1.00 },
+  valles: { top:0x120806, mid:0x8e3416, hor:0xb05930, fog:0x8a4526, dust:0.85 },
+  olympus:{ top:0x241009, mid:0xd4662e, hor:0xf0a061, fog:0xb06036, dust:0.90 },
+  polar: { top:0x2a3a4a, mid:0xd8c8b8, hor:0xf0e6da, fog:0xc8bcb0, dust:0.45 },
+  storm:  { top:0x1c0d06, mid:0x6d3311, hor:0x8f4c22, fog:0x6b3a1a, dust:2.20 },
+};
+const _atmoCur = {
+  top:new THREE.Color(BIOME_ATMO.arcadia.top),
+  mid:new THREE.Color(BIOME_ATMO.arcadia.mid),
+  hor:new THREE.Color(BIOME_ATMO.arcadia.hor),
+  fog:new THREE.Color(BIOME_ATMO.arcadia.fog),
+};
+const _atmoTo = {
+  top:new THREE.Color(), mid:new THREE.Color(), hor:new THREE.Color(), fog:new THREE.Color(),
+};
+let atmoDust = 1.0, atmoDustTo = 1.0;
+// Palette bão (lớp phủ mờ) + vector tạm dùng chung để không cấp phát mỗi khung.
+const _STORM_TOP = new THREE.Color(0x1c0d06), _STORM_MID = new THREE.Color(0x6d3311);
+const _STORM_HOR = new THREE.Color(0x8f4c22), _STORM_FOG = new THREE.Color(0x6b3a1a);
+const _atmoSky = new THREE.Color(), _sunA = new THREE.Color(), _sunB = new THREE.Color();
+
+/** Đặt đích khí quyển theo biome. Nội suy mượt trong updateAtmosphere(dt). */
+function setBiomeAtmosphere(biomeId){
+  const a = BIOME_ATMO[biomeId] || BIOME_ATMO.arcadia;
+  _atmoTo.top.setHex(a.top); _atmoTo.mid.setHex(a.mid);
+  _atmoTo.hor.setHex(a.hor);  _atmoTo.fog.setHex(a.fog);
+  atmoDustTo = a.dust;
+  if (lastBiomeId !== biomeId){
+    lastBiomeId = biomeId;
+    // Đổi preset đồ họa cũng phải giữ fog nhất quán: preset chỉ nhân mật độ.
+    if (typeof applyGraphicsPreset === 'function' && GFX_PRESETS[gfxName]){
+      scene.fog.density = FOG_BASE * GFX_PRESETS[gfxName].fogMul;
+    }
+  }
+}
+
+function updateAtmosphere(dt){
+  // Hệ số lerp: ~1.2s để đổi màu, nhưng phải tương đối độc lập framerate.
+  const k = 1 - Math.exp(-dt * 3.2);
+  _atmoCur.top.lerp(_atmoTo.top, k);
+  _atmoCur.mid.lerp(_atmoTo.mid, k);
+  _atmoCur.hor.lerp(_atmoTo.hor, k);
+  _atmoCur.fog.lerp(_atmoTo.fog, k);
+  atmoDust += (atmoDustTo - atmoDust) * k;
+  // Bão phủ thêm lớp màu bụi mịn lên trên màu biome (tương phản giảm, đỏ lên).
+  // Dùng hệ số stormLevel nên bão vẫn chạy trên mọi biome, không phải chỉ vùng storm.
+  const s = typeof stormLevel === 'number' ? stormLevel : 0;
+  _atmoSky.copy(_atmoCur.top).lerp(_STORM_TOP, s);
+  skyMat.uniforms.top.value.copy(_atmoSky);
+  _atmoSky.copy(_atmoCur.mid).lerp(_STORM_MID, s);
+  skyMat.uniforms.mid.value.copy(_atmoSky);
+  _atmoSky.copy(_atmoCur.hor).lerp(_STORM_HOR, s);
+  skyMat.uniforms.horizon.value.copy(_atmoSky);
+  _atmoSky.copy(_atmoCur.fog).lerp(_STORM_FOG, s);
+  scene.fog.color.copy(_atmoSky);
+  // Mặt trời & ánh sáng bị bụi hấp thụ: xanh/lam dịu dần, cực lạnh hơn.
+  sun.color.lerp(_sunA.setHex(lastBiomeId==='storm' ? 0xd8a070 : 0xfff0d0).lerp(_sunB.setHex(0xd8906a), s), k);
+  hemi.color.lerp(_sunA.setHex(lastBiomeId==='polar' ? 0xdce8f0 : 0xffd8b0).lerp(_sunB.setHex(0xc98a5a), s), k);
+  hemi.groundColor.lerp(_sunA.setHex(lastBiomeId==='polar' ? 0x4a5a68 : 0x1a0f0a).lerp(_sunB.setHex(0x2a1208), s), k);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // MẬT ĐỘ MÔI TRƯỜNG — Giai đoạn 1 P0 Task 1.2
 // Trước đây: 520 Dodecahedron phun đều bằng Math.random() toàn cục → mặt phẳng
 // trống, không có cụm, không có cỡ, không có hướng.
@@ -837,6 +910,129 @@ dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPos,3));
 const dustMat=new THREE.PointsMaterial({ color:0xffc08a, size:1.8, transparent:true, opacity:0.0, sizeAttenuation:true, depthWrite:false });
 const dustPoints=new THREE.Points(dustGeo, dustMat);
 scene.add(dustPoints);
+
+// ════════════════════════════════════════════════════════════════════════════
+// CONTACT SHADOW + VỆT BÁNH — Giai đoạn 1 P0 Task 1.3
+//
+// Shadow map cho bóng đổ đúng hướng, nhưng bóng tiếp xúc dưới bánh thì yếu/không
+// có vì bánh cách đất chỉ vài cm. Thiếu bóng tiếp xúc là lý do phương tiện
+// trông như "lơ lửng" dù không xuyên đất. Ở đây vẽ một vệt tối mềm dưới MỖI
+// bánh, neo theo cao độ đất thật + độ cao bánh (bánh càng cao → bóng càng nhạt
+// và to). Vệt bánh là vòng tròn tái sử dụng (ring buffer) nên không phình vô hạn.
+// ════════════════════════════════════════════════════════════════════════════
+const contactTex = (()=>{
+  const c=document.createElement('canvas'); c.width=c.height=64;
+  const g=c.getContext('2d');
+  const grd=g.createRadialGradient(32,32,0, 32,32,32);
+  grd.addColorStop(0,   'rgba(0,0,0,0.85)');
+  grd.addColorStop(0.45,'rgba(0,0,0,0.42)');
+  grd.addColorStop(1,   'rgba(0,0,0,0)');
+  g.fillStyle=grd; g.fillRect(0,0,64,64);
+  const t=new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+})();
+const contactMat = new THREE.MeshBasicMaterial({
+  map:contactTex, transparent:true, depthWrite:false, opacity:0.55,
+  blending:THREE.NormalBlending, color:0x1a0a04,
+});
+const contactPool=[];                     // pool dùng lại, không cấp phát mỗi khung
+const CONTACT_MAX=10;
+const contactGroup=new THREE.Group();
+contactGroup.renderOrder=1;
+scene.add(contactGroup);
+for(let i=0;i<CONTACT_MAX;i++){
+  // Mỗi vệt một material RIÊNG: opacity thuộc material, không phải mesh.
+  // Dùng chung một material thì không fade riêng được từng bánh.
+  const m=new THREE.Mesh(new THREE.PlaneGeometry(1,1), contactMat.clone());
+  m.rotation.x=-Math.PI/2; m.visible=false; m.renderOrder=1;
+  contactGroup.add(m); contactPool.push(m);
+}
+
+// Vệt bánh: ring buffer ô đất bị nén, mờ dần theo quãng đường.
+const TRAIL_MAX=760;   // 760 x 0.55m ≈ 418m vệt liên tục
+const trailMat=new THREE.MeshBasicMaterial({
+  map:contactTex, transparent:true, depthWrite:false, opacity:0.42, color:0x2a1008,
+});
+const trailGeo=new THREE.PlaneGeometry(1,1);
+const trailIM=new THREE.InstancedMesh(trailGeo, trailMat, TRAIL_MAX);
+trailIM.count=0; trailIM.frustumCulled=false; trailIM.renderOrder=1;
+scene.add(trailIM);
+const trailData=[];            // {x,z,y,age}
+let trailHead=0;
+let trailDist=0;             // quãng đường tích luỹ tới lần thả vệt kế tiếp
+const _td=new THREE.Object3D();
+const _ttmp=new THREE.Vector3();
+
+/** Đặt vệt tối tiếp xúc dưới các bánh. Gọi mỗi khung hình. */
+function updateContactShadows(){
+  const conf=VEHICLES[vehicleType];
+  const cy=Math.cos(playerYaw), sy=Math.sin(playerYaw);
+  let n=0;
+  player.updateMatrixWorld(true);
+  for(let i=0;i<conf.wheels.length && n<CONTACT_MAX;i++){
+    const [lx,lz]=conf.wheels[i];
+    const wx=playerPos.x+(lx*cy-lz*sy);
+    const wz=playerPos.z+(lx*sy+lz*cy);
+    const gh=sampleHeight(wx,wz);
+    // thực nhận bánh (world matrix) để biết bánh đang lơ lửng bao xa
+    const wr=vRefs.wheels[i];
+    let wy=playerPos.y;
+    if(wr){ wr.getWorldPosition(_ttmp); wy=_ttmp.y; }
+    const lift=Math.max(0, wy-gh);
+    const m=contactPool[n++];
+    // bánh càng cao → vệt càng nhạt + rộng (bóng đổ nhạt dần theo cự ly)
+    const s=1.05+lift*1.5;
+    m.position.set(wx, gh+0.035, wz);
+    m.scale.set(s, s*0.72, 1);
+    m.visible = lift < 0.75;
+    m.material.opacity = 0.55*(1-Math.min(1, lift/0.75));
+  }
+  for(let i=n;i<CONTACT_MAX;i++) contactPool[i].visible=false;
+}
+
+/** Thả một vệt bánh xuống đất. Gọi khi bánh vừa lăn qua chỗ mới. */
+function dropWheelTrail(){
+  const conf=VEHICLES[vehicleType];
+  const cy=Math.cos(playerYaw), sy=Math.sin(playerYaw);
+  // Lấy bánh TRÁI và bánh PHẢI của cùng trục để có HAI vệt song song.
+  // Rover: [[-1,0.68],[-1,-0.68],[1,0.68],[1,-0.68]] -> index 0 và 1 là hai bên.
+  // (Trước đây lấy i+=2 tức 0 và 2 — cùng z=+0.68, chồng thành MỘT vệt.)
+  for(let i=0;i<2 && i<conf.wheels.length;i++){
+    const [lx,lz]=conf.wheels[i];
+    const wx=playerPos.x+(lx*cy-lz*sy);
+    const wz=playerPos.z+(lx*sy+lz*cy);
+    const gh=sampleHeight(wx,wz);
+    const prev=trailData[(trailHead-1+TRAIL_MAX)%TRAIL_MAX];
+    if(prev && Math.abs(prev.x-wx)<0.55 && Math.abs(prev.z-wz)<0.55) continue;  // trùng ô
+    trailData[trailHead]={x:wx,z:wz,y:gh,age:0};
+    trailHead=(trailHead+1)%TRAIL_MAX;
+  }
+  rebuildTrail(0);
+}
+
+/** Dựng lại instance matrix của vệt bánh + fade theo tuổi. */
+const TRAIL_LIFE = 46;   // giây
+function rebuildTrail(dt){
+  let n=0;
+  for(let i=0;i<trailData.length;i++){
+    const d=trailData[i];
+    if(!d) continue;
+    d.age += dt;
+    if(d.age>TRAIL_LIFE){ trailData[i]=null; continue; }
+    const fade=1-d.age/TRAIL_LIFE;
+    // Fade bằng THU NHỎ chứ không bằng alpha: InstancedMesh dùng chung 1 material
+    // nên không fade được từng ô riêng. Thu nhỏ trông tự nhiên hơn và rẻ hơn.
+    const s=1.30*Math.sqrt(fade);
+    _td.position.set(d.x, d.y+0.02, d.z);
+    _td.rotation.set(-Math.PI/2, 0, 0);
+    _td.scale.set(s, s*0.7, 1);
+    _td.updateMatrix();
+    trailIM.setMatrixAt(n++, _td.matrix);
+  }
+  trailIM.count=n;
+  trailIM.instanceMatrix.needsUpdate=true;
+}
 
 // Player (cat + vehicle)
 const _calTmp=new THREE.Vector3();
@@ -1762,7 +1958,7 @@ function applyTime(){
   const sunH = Math.sin(t*Math.PI*2 - Math.PI/2);
   sun.position.set(300*Math.cos(t*Math.PI*2), 120+ sunH*340, 100);
   sun.intensity = THREE.MathUtils.lerp(0.35, 1.6, THREE.MathUtils.clamp((sunH+0.5),0,1));
-  ambient.intensity = THREE.MathUtils.lerp(0.35, 0.9, THREE.MathUtils.clamp((sunH+0.7),0,1));
+  hemi.intensity = THREE.MathUtils.lerp(0.35, 0.9, THREE.MathUtils.clamp((sunH+0.7),0,1));
   stars.material.opacity = THREE.MathUtils.clamp(0.65 - sunH*0.8, 0, 0.65);
   // fog color
   const fogC = new THREE.Color().lerpColors(new THREE.Color(0x2a140a), new THREE.Color(0x1a0f0a), THREE.MathUtils.clamp(sunH,0,1));
@@ -1936,12 +2132,14 @@ function maybeStorm(now){
   }
   stormLevel += (stormTarget - stormLevel) * 0.012; // glide 8s
   const s = stormLevel;
-  scene.fog.density = 0.0012 + s*0.0075;
+  // Mật độ fog TÍNH TỪ FOG_BASE × preset, không hardcode — trước đây ghi cứng
+  // 0.0012 mỗi khung nên vô hiệu hoá cả bản sửa cạnh terrain lộ (Task 1.6).
+  scene.fog.density = FOG_BASE * (GFX_PRESETS[gfxName]?.fogMul ?? 1) * (1 + s*2.4);
+  // Cường độ ánh sáng: bão làm tối. MÀU thì do updateAtmosphere() sở hữu
+  // (nó biết cả biome lẫn stormLevel) — ở đây KHÔNG ghi đè, nếu không hai hệ
+  // sẽ tranh nhau và hệ mới luôn thua vì chạy sau.
   sun.intensity = THREE.MathUtils.lerp(1.6, 0.5, s) * SUN_BASE_I;
-  sun.color.setHSL(0.07, 0.35+s*0.5, THREE.MathUtils.lerp(0.72, 0.5, s));
-  skyMat.uniforms.top.value.setHSL(0.06, 0.3+s*0.5, THREE.MathUtils.lerp(0.05, 0.18, s));
-  skyMat.uniforms.horizon.value.setHSL(0.05, 0.5+s*0.45, THREE.MathUtils.lerp(0.55, 0.42, s));
-  ambient.intensity = THREE.MathUtils.lerp(0.85, 0.5, s) * AMB_BASE_I;
+  hemi.intensity = THREE.MathUtils.lerp(0.85, 0.5, s) * AMB_BASE_I;
   stormLevelHud(s);
 }
 let _lastStorm=0;
@@ -2440,6 +2638,16 @@ function frame(now){
     distance += moved;
   }
   settleToGround();
+  // Khí quyển theo biome (Task 1.6): set đích khi đổi vùng, lerp mượt mỗi khung.
+  setBiomeAtmosphere(biomeAt(playerPos.x, playerPos.z).biome.id);
+  updateAtmosphere(dt);
+  updateContactShadows();
+  // Vệt bánh: thả theo quãng đường, không theo khung hình (tránh dày đặc khi đứng yên)
+  if(Math.abs(speed)>0.01){
+    trailDist += Math.abs(speed)*dt*12;
+    if(trailDist > 0.55){ trailDist=0; dropWheelTrail(); }   // 0.55m < bề rộng vệt 1.3m -> liền mạch
+  }
+  rebuildTrail(dt);
   // bob nhẹ (chỉ khi đang chạy)
   const bob = Math.abs(speed)>0.01 ? Math.sin(now*0.012*(Math.abs(speed)+1.2))*conf.bob*0.08*Math.abs(fwd) : 0;
   playerPos.y += Math.max(0,bob);
@@ -2541,7 +2749,7 @@ function frame(now){
   drawMini();
   // dust
   const isStorm = bi.id==='storm';
-  dustMat.opacity = gfxDustMul * THREE.MathUtils.clamp( (isStorm?0.42:0.0) + Math.min(0.35, speedKmh/70) + stormLevel*0.5, 0, 0.95);
+  dustMat.opacity = gfxDustMul * atmoDust * THREE.MathUtils.clamp( (isStorm?0.42:0.0) + Math.min(0.35, speedKmh/70) + stormLevel*0.5, 0, 0.95);
   const dpos=dustGeo.attributes.position;
   for(let i=0;i<dustCount;i++){
     let x=dpos.getX(i), y=dpos.getY(i), z=dpos.getZ(i);
