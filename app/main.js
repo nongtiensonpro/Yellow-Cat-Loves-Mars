@@ -2311,6 +2311,9 @@ addEventListener('keydown', e=>{
   if(k==='f' && !e.repeat){
     const on = document.documentElement.dataset.perf === '1';
     document.documentElement.dataset.perf = on ? '0' : '1';
+    perfUserOn = !on;
+    // Bật lên thì áp lại chế độ HUD ngay, nếu không đang lái thì ô vẫn bị ẩn
+    if (perfUserOn) applyHudDriveMode(hudDriveOn);
     perfFps = 0; perfAcc = 0; perfFrames = 0;
   }
   if(k==='h') toggleHelp();
@@ -3365,8 +3368,14 @@ const perfEl = document.getElementById('hud-perf');
 // Trạng thái HUD: gọn (đang lái) / đầy (đứng yên)
 let hudDriveOn = false, hudIdleT = 99;
 const HUD_HIDE_SEL = ['#hud-hint', '#hud-tools', '#vehicle-switch', '#hud-perf-pill'];
+// Người chơi bấm F = đang CHỦ ĐỘNG muốn nhìn số đo. Khi đó quy tắc "HUD gọn
+// khi lái" không được giấu ô đo đi — mà lúc đang lái mới là lúc cần nhìn FPS
+// nhất. Trước đây #hud-perf-pill nằm trong danh sách ẩn vô điều kiện, nên bấm F
+// xong đi vài bước là ô biến mất; đã tách: chỉ ẩn khi perfUserOn = false.
+let perfUserOn = false;
 function applyHudDriveMode(on){
   for (const sel of HUD_HIDE_SEL){
+    if (perfUserOn && sel === '#hud-perf-pill') continue;
     const el = document.querySelector(sel);
     if (el) el.classList.toggle('hud-drive-hidden', on);
   }
