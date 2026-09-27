@@ -406,3 +406,56 @@ Mọi số liệu trong tài liệu này đều đo bằng **SwiftShader (render
 không đại diện cho phần cứng người chơi. Bấm `F` để bật ô
 `FPS · draw · tri · preset`, đo bằng máy thật rồi mới quyết có hạ ngưỡng
 post-FX (Task 2.4) hay không.
+
+## 16. Kit Valles Marineris (Task 2.7, 2026-09-27)
+
+Valles nằm ở (420,-180), **ngoài bán kính 8 landmark cũ** → trước đó vùng này
+trống hoàn toàn, đi ngang chỉ thấy đất. Nay 13 landmark / **8 silhouette**.
+
+| Loại | Số | Silhouette đọc được là |
+|---|---|---|
+| mesa | 2 | bàn: đỉnh phẳng, răng cưa viền |
+| spire | 2 | tháp nhọn xoắn |
+| arch | 2 | vòm có lỗ khuyết |
+| field | 2 | cả lũy tháp nhỏ |
+| **canyon** | 2 | **khe hở thấp giữa hai khối** |
+| **terrace** | 1 | **bậc thang lệch tầng** |
+| **bridge** | 1 | **nhịp dày bắc ngang, có trụ giữa** |
+| **vista** | 1 | **bệ thấp + cột cao** |
+
+### Nguyên tắc: đặt landmark ĐÚNG trên trục hào
+
+Hào Valles đã có sẵn trong `heightAt`: trục `x + 0.2z = 320`, sâu tới 80m.
+Đặt landmark lệch trục → thành cục đá lạ lẫm nằm cạnh hào, không đọc ra
+"miệng hào". Mọi landmark Valles đều đặt theo `x = 320 - 0.2z`.
+*(Sửa 1 lần: ban đầu đặt lệch 74m, trông như mọi cục đá khác.)*
+
+### Váy hào KHÔNG có đế bệt
+
+Đế bệt tròn (46→58m) của mọi landmark khác sẽ **bịt kín miệng hào**. Riêng
+`canyon` bỏ đế bệt.
+
+### ⚠️ Sửa chất liệu: landmark là ngoại lệ của Task 2.2
+
+Task 2.2 đưa xe lên PBR `autoMat()` nhưng **bỏ sót landmark** — vẫn là
+`MeshStandardMaterial` phẳng màu tối. Giữa đất sáng cam và đá gần như đen
+tím, đọc ra như vết bóng chứ không phải đá. Sửa bằng cách dựng `LM_MATS`
+qua `autoMat()` — phải đặt **sau** hàm `autoMat` vì phụ thuộc nó.
+
+| Vị trí | Trước | Sau |
+|---|---|---|
+| đáy hào | TB 39.1 | **75.6** |
+| bàn đá | TB 33.6 · đen 20.2% | **40.9 · 4.0%** |
+| đồng bằng (spawn) | TB 55.8 | **80.6** |
+
+### ⚠️ Bẫy probe: ảnh chụp có thể là GIAO DIỆN, không phải cảnh
+
+Popup chọn xe mở ngay sau `#btn-start`. Quên đóng → `page.screenshot()` chụp
+đúng cái popup, đo ra "sáng 50, đen 0%" trong khi cảnh 3D thì tối sậm.
+Đã dính **hai lần**. Nay `clean()` đóng mọi overlay + **xác nhận
+`display:none`** trước khi chụp, và in cảnh báo nếu còn sót.
+
+Tương tự: camera orbit tính từ **đáy hào** với `dist=26` bị chôn trong vách →
+ảnh đen 100%, nhưng đó là lỗi probe, không phải lỗi cảnh. Lùi ra
+`dist=120` là ảnh sáng bình thường. **Ảnh đen phải kiểm bằng cách lùi
+camera trước khi kết luận cảnh hỏng.**

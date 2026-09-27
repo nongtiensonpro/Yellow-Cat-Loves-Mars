@@ -680,11 +680,20 @@ const dummy=new THREE.Object3D();   // giữ lại: các khối sau dùng chung
 //   5. 2 landmark cạnh nhau không cùng hình dạng
 // Mỗi landmark = khối chính + đế + răng/rãnh phá vỡ viền + beacon (đọc được xa).
 // ════════════════════════════════════════════════════════════════════════════
-const LM_MATS = {
-  rock:   new THREE.MeshStandardMaterial({ color:0x6b3a22, roughness:0.85, metalness:0.0, flatShading:true }),
-  rockLit:new THREE.MeshStandardMaterial({ color:0x8a4a1e, roughness:0.80, metalness:0.0, flatShading:true }),
-  dark:   new THREE.MeshStandardMaterial({ color:0x3a1c0d, roughness:0.92, metalness:0.0, flatShading:true }),
-  beacon: new THREE.MeshStandardMaterial({ color:0xffcc33, emissive:0xffa500, emissiveIntensity:0.55, roughness:0.4 }),
+// Vật liệu landmark: dựng BẰNG autoMat() như xe và đất, không phải
+// MeshStandardMaterial phẳng. Trước đây landmark là ngoại lệ — màu tối đơn
+// sắc, không normal/roughness map — nên giữa đất sáng cam và đá gần như đen
+// tím, đọc ra như vết bóng chứ không phải đá. Bị autoMat định nghĩa SAU
+// nên phải để khai báo let và gán muộn (xem nơi gán, sau hàm autoMat).
+let LM_MATS = null;
+function makeLandmarkMats(){
+  return {
+    rock:    autoMat(0x9a6038, 0.0, 0.88, null, 'lm-rock'),
+    rockLit: autoMat(0xb8794a, 0.0, 0.82, null, 'lm-rocklit'),
+    dark:    autoMat(0x5a3320, 0.0, 0.93, null, 'lm-dark'),
+    beacon:  new THREE.MeshStandardMaterial({ color:0xffcc33, emissive:0xffa500,
+               emissiveIntensity:0.55, roughness:0.4 }),
+  };
 };
 const landmarks = [];
 
@@ -739,6 +748,96 @@ function buildLandmark(kind, x, z, scale){
       sh.rotation.set(0, (i%2?0.3:-0.25), 0);
       sh.castShadow = true; g.add(sh);
     }
+  } else if (kind === 'canyon') {
+    // HÀO VALLES — chuỗi hào lớn: hai vách đối diện bậc thang, khe đen ở giữa.
+    // Silhouette đọc là "khe hở thấp giữa hai khối", khác hẳn mesa (bàn) và
+    // spire (tháp). Đây là dấu hiệu địa lý đặc trưng của Valles Marineris.
+    const len = 300*scale, wid = 62*scale, depth = 44*scale;
+    for (const s of [-1, 1]){
+      // 5 bậc thang mỗi vách — vách bị bào mòn theo tầng, không phẳng
+      for (let t=0;t<5;t++){
+        const tt = t/5;
+        const wdt = wid*(1 - tt*0.22);
+        const h = depth*0.20;
+        const step = new THREE.Mesh(new THREE.BoxGeometry(len*(1-tt*0.10), h, wdt),
+          t%2 ? LM_MATS.rock : LM_MATS.rockLit);
+        step.position.set(0, -depth*0.5 + (t+0.5)*h, s*(wid*0.5 + wdt*0.5 - tt*wid*0.11));
+        step.castShadow = step.receiveShadow = true; g.add(step);
+      }
+    }
+    // Đáy khe tối: có nền thật để đọc ra chiều sâu, không phải hố đen
+    const floor = new THREE.Mesh(new THREE.BoxGeometry(len*0.92, 2, wid*0.55), LM_MATS.dark);
+    floor.position.y = -depth*0.5; floor.receiveShadow = true; g.add(floor);
+    // Gờ mảnh ven miệng hào
+    for (const s of [-1, 1]){
+      for (let i=0;i<5;i++){
+        const tooth = new THREE.Mesh(new THREE.BoxGeometry((9+((i*13)%17))*scale, (5+((i*7)%6))*scale, 6*scale),
+          i%2 ? LM_MATS.dark : LM_MATS.rock);
+        tooth.position.set((i-2)*len*0.19, (7+((i*5)%4))*scale*0.5, s*wid*0.5);
+        tooth.rotation.set(((i%3)-1)*0.13, (i*11)%7*0.19, ((i%4)-1.5)*0.11);
+        tooth.castShadow = tooth.receiveShadow = true; g.add(tooth);
+      }
+    }
+  } else if (kind === 'terrace') {
+    // BÀN ĐÁ NHIỀU TẦNG — 3 phiến lớn chồng lệch, từ xa nhìn thành bậc thang.
+    // Khác mesa: mesa đối xứng và có răng cưa; terrace LỆCH tầng và trơn.
+    let w = 46*scale, y0 = 0;
+    for (let i=0;i<3;i++){
+      const h = (11+((i*5)%4))*scale;
+      const slab = new THREE.Mesh(new THREE.CylinderGeometry(w*0.80, w, h, 7, 1),
+        i%2 ? LM_MATS.rockLit : LM_MATS.rock);
+      slab.position.set((i-1)*7*scale, y0 + h*0.5, (i%2?1:-1)*5*scale);
+      slab.rotation.y = (i-1)*0.22;
+      slab.castShadow = slab.receiveShadow = true; g.add(slab);
+      y0 += h; w *= 0.78;
+    }
+    // Mỏm hành lang chéo tạo đường lên điểm nhìn
+    const ramp = new THREE.Mesh(new THREE.BoxGeometry(16*scale, 3.4*scale, 54*scale), LM_MATS.rockLit);
+    ramp.position.set(26*scale, 9*scale, 14*scale);
+    ramp.rotation.set(0, -0.34, 0.30);
+    ramp.castShadow = ramp.receiveShadow = true; g.add(ramp);
+  } else if (kind === 'bridge') {
+    // CẦU ĐÁ TỰ NHIÊN — nhịp dày bắc ngang khe, dày hơn vòm 'arch', có trụ
+    // giữa. Khoảng trống bên dưới chính là khe hào — đọc được ở silhouette.
+    const span = 74*scale, legH = 26*scale;
+    for (const s of [-1, 1]){
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(8*scale, 15*scale, legH, 6, 1), LM_MATS.rock);
+      leg.position.set(s*span*0.44, legH*0.5, 0);
+      leg.rotation.z = -s*0.05;
+      leg.castShadow = leg.receiveShadow = true; g.add(leg);
+    }
+    // Nhịp cong võng: 5 phiến thay vì một thanh thẳng
+    for (let i=0;i<5;i++){
+      const t = (i/4 - 0.5);
+      const sl = new THREE.Mesh(new THREE.BoxGeometry(span*0.24, 7*scale, 13*scale),
+        i%2 ? LM_MATS.rockLit : LM_MATS.rock);
+      sl.position.set(t*span*0.92, legH + (1-Math.abs(t)*2)*1.6*scale, 0);
+      sl.rotation.z = -t*0.13;
+      sl.castShadow = sl.receiveShadow = true; g.add(sl);
+    }
+    const mid = new THREE.Mesh(new THREE.CylinderGeometry(5*scale, 9*scale, legH*0.8, 6, 1), LM_MATS.rock);
+    mid.position.set(0, legH*0.4, 0); mid.castShadow = mid.receiveShadow = true; g.add(mid);
+    for (let i=0;i<4;i++){
+      const ch = new THREE.Mesh(new THREE.BoxGeometry((4+((i*11)%7))*scale, 2.6*scale, 5*scale), LM_MATS.dark);
+      ch.position.set((i-1.5)*span*0.17, legH - 3.8*scale, (i%2?1:-1)*6*scale);
+      ch.rotation.set(0, (i%2?0.34:-0.28), 0);
+      ch.castShadow = true; g.add(ch);
+    }
+  } else if (kind === 'vista') {
+    // ĐIỂM NHÌN — bệ đá nhỏ trên chân trụ, đứng giữa vùng trống. Nhỏ, thấp,
+    // nhưng beacon cao nên vẫn thấy từ xa: mốc "dừng lại ngắm" trong hành trình.
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(20*scale, 27*scale, 7*scale, 9, 1), LM_MATS.rock);
+    base.position.y = 3.5*scale; base.castShadow = base.receiveShadow = true; g.add(base);
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(17*scale, 20*scale, 4*scale, 9, 1), LM_MATS.rockLit);
+    cap.position.y = 9*scale; cap.castShadow = cap.receiveShadow = true; g.add(cap);
+    for (let i=0;i<3;i++){
+      const a = -0.5 + i*0.5;
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(1.1*scale, 1.6*scale, 7*scale, 5, 1), LM_MATS.dark);
+      post.position.set(Math.cos(a)*16*scale, 14*scale, Math.sin(a)*16*scale);
+      post.castShadow = true; g.add(post);
+    }
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.7*scale, 0.9*scale, 22*scale, 5, 1), LM_MATS.dark);
+    mast.position.y = 22*scale; mast.castShadow = true; g.add(mast);
   } else { // 'field' — cụm tháp nhỏ, đọc thành cả lũy thay vì một khối
     for (let i=0;i<5;i++){
       const ox = (i-2)*7*scale, oz = ((i*7)%3-1)*6*scale;
@@ -752,12 +851,17 @@ function buildLandmark(kind, x, z, scale){
 
   // Đế bệt: tách nền/tiền cảnh, đồng thời "neo" landmark xuống mặt đất
   // (quy tắc 4 — không ai muốn thấy khối đá lơ lửng).
-  const skirt = new THREE.Mesh(new THREE.CylinderGeometry(46*scale, 58*scale, 1.6, 16), LM_MATS.dark);
-  skirt.position.y = 0.4; skirt.receiveShadow = true; g.add(skirt);
+  // Đế bệt tách nền/tiền cảnh và "neo" landmark xuống mặt đất (quy tắc 4).
+  // Valles cần miệng hào THÔNG, nên đáy hào không có đế bệt.
+  if (kind !== 'canyon') {
+    const skirt = new THREE.Mesh(new THREE.CylinderGeometry(46*scale, 58*scale, 1.6, 16), LM_MATS.dark);
+    skirt.position.y = 0.4; skirt.receiveShadow = true; g.add(skirt);
+  }
 
   // Beacon nhỏ trên đỉnh — điểm nhấn phát sáng, đọc được từ rất xa.
   const bx = new THREE.Mesh(new THREE.SphereGeometry(1.5*scale, 8, 6), LM_MATS.beacon);
-  const topY = (kind==='mesa' ? 17*scale : kind==='arch' ? 30*scale : kind==='spire' ? 66*scale : 22*scale);
+  const topY = ({ mesa:17*scale, arch:30*scale, spire:66*scale, field:22*scale,
+    canyon:16*scale, terrace:38*scale, bridge:29*scale, vista:33*scale })[kind] ?? 22*scale;
   bx.position.set(0, topY, 0); g.add(bx);
   const halo = new THREE.PointLight(0xffb060, 6, 120*scale, 2);
 halo.layers.set(2);   // beacon thuộc phong cảnh (lớp xa)
@@ -770,15 +874,6 @@ halo.layers.set(2);   // beacon thuộc phong cảnh (lớp xa)
 }
 
 // Bố trí: 1 landmark LỚN trong tầm nhìn spawn Arcadia (0,0) — mục tiêu mốc thị giác.
-buildLandmark('mesa',  118,  96, 1.55);   // nhìn thấy ngay khi bắt đầu
-buildLandmark('spire',-152, -88, 1.15);
-buildLandmark('arch',   62, -168, 0.95);
-buildLandmark('field', 236, -46, 1.30);
-buildLandmark('field',-238, 168, 1.05);
-buildLandmark('spire',  64, 292, 1.25);
-buildLandmark('mesa', -108, 336, 1.40);
-buildLandmark('arch',  332, 176, 0.85);
-console.info('[landmark] dựng', landmarks.length, 'landmark');
 // ════════════════════════════════════════════════════════════════════════════
 // VẬT LIỆU PBR THỦ TỤC — Phase 2 Task 2.2
 //
@@ -904,6 +999,32 @@ function autoMat(color, metalness=0.4, roughness=0.55, emissive=null, key=null){
   _matCache.set(ck, m);
   return m;
 }
+// Vật liệu + dựng landmark: đặt SAU autoMat vì phụ thuộc nó.
+LM_MATS = makeLandmarkMats();
+
+buildLandmark('mesa',  118,  96, 1.55);   // nhìn thấy ngay khi bắt đầu
+buildLandmark('spire',-152, -88, 1.15);
+buildLandmark('arch',   62, -168, 0.95);
+buildLandmark('field', 236, -46, 1.30);
+buildLandmark('field',-238, 168, 1.05);
+buildLandmark('spire',  64, 292, 1.25);
+buildLandmark('mesa', -108, 336, 1.40);
+buildLandmark('arch',  332, 176, 0.85);
+// ── KIT VALLES MARINERIS (Task 2.7) ──
+// Valles nằm ở (420,-180), ngoài bán kính các landmark cũ → trước đó vùng này
+// TRỐNG hoàn toàn, đi ngang chỉ thấy đất. Nay có chuỗi hào, bàn đá nhiều tầng,
+// cầu đá tự nhiên và điểm nhìn — đọc được "đây là Valles" từ xa.
+// Hào Valles đã có sẵn trong heightAt: trục x + 0.2z = 320, sâu tới 80m.
+// Landmark phải đặt ĐÚNG trên trục đó (x = 320 - 0.2z) thì mới đọc thành
+// miệng hào, đặt lệch thì thành một cục đá lạ lẫm nằm cạnh hào.
+buildLandmark('canyon',  350, -150, 1.25);   // hào lớn nhất (x = 320+30)
+buildLandmark('canyon',  372, -262, 0.95);   // hào nhánh phía bắc
+buildLandmark('terrace',  300, -240, 1.10);   // bàn đá 3 tầng trên bờ hào
+buildLandmark('bridge',   366,  -60, 1.00);   // cầu đá tự nhiên bắc ngang hào
+buildLandmark('vista',    318,  -40, 0.90);   // điểm nhìn ngay bên mép hào
+console.info('[landmark] dựng', landmarks.length, 'landmark');
+
+
 /** Vật liệu hero: MeshPhysicalMaterial có clearcoat + bản đồ xước/bụi, có cache. */
 function heroMat(key, o){
   if (_matCache.has(key)) return _matCache.get(key);
@@ -928,7 +1049,7 @@ function heroMat(key, o){
 // KHÍ QUYỂN THEO BIOME — Giai đoạn 1 P0 Task 1.6
 //
 // Review: "bầu trời đỏ rất mạnh nhưng dễ làm toàn cảnh bị đơn sắc; foreground /
-// background chưa tách đủ lớp" và "fog cần đổi màu theo biome".
+
 // Mỗi biome có bảng màu riêng cho: trời (top/mid/horizon), fog, và hệ số
 // bão bụi. Chuyển cảnh bằng LERP mượt trong ~1.2s, không "nhảy" màu.
 //
@@ -3406,6 +3527,9 @@ function updatePerfHud(dt){
 // expose for debug
 window.__yc={ scene, player, camera, renderer, BIOMES, POIS, heightAt, sampleHeight, slopeAt, discovered, VEHICLES, setPlayerPos(x,z){ playerPos.x=x; playerPos.z=z; playerPos.y=sampleHeight(x,z)+VEHICLES[vehicleType].ride; settleToGround(); player.position.copy(playerPos); player.rotation.set(targetPitch, -playerYaw, targetRoll, 'YXZ'); player.updateMatrixWorld(true); },
   setVehicle(t){ setVehicle(t); },
+  // Danh sách landmark cho probe: kind, vị trí, chiều cao beacon, số mesh con.
+  landmarkInfo(){ return landmarks.map(l=>({ kind:l.userData.kind, x:Math.round(l.userData.x),
+    z:Math.round(l.userData.z), topY:+l.userData.topY.toFixed(1), meshes:l.children.length })); },
   setCam(m){ camMode=m; },
   // Đặt góc orbit để probe chụp cận cảnh / góc thấp một cách tất định.
   setOrbit(pitch, dist, yaw){ camMode=2; camPitch=pitch; camDist=dist; if(yaw!==undefined) camYaw=yaw; return {camMode, camPitch, camDist, camYaw}; },
