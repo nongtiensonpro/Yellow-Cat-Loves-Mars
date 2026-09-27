@@ -179,7 +179,7 @@ Mỗi Phase có Definition of Done + Task nhỏ (2–5 phút/task, TDD khi có l
 **Files:** `app/main.js` (shader, particle)
 **Nội dung:** Sun shafts nhẹ (god rays fake bằng quad + depth), heat haze trên đất nóng, bụi bám trên rover theo quãng đường.
 
-### Task 3.4 — Animation graph (phương tiện + nhân vật)
+### Task 3.4 — Animation graph  ✅ 27/09/2026 (art-bible §19) (phương tiện + nhân vật)
 **Files:** `app/main.js`, `assets/models/*.glb` (rig)
 **Nội dung:** State: idle → accel → cruise → brake → turn lean → bump. Mèo look-at, tai/đuôi phản hồi tốc độ/địa hình.
 

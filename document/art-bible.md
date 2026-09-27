@@ -568,3 +568,77 @@ Phải kiểm tra **màu** phát sáng thật: `em.r + em.g + em.b > 0.02`.
 
 Số đo: bike 25 / moto 20 / rover 22 vật liệu được phủ bụi (sau khi sửa).
 Kiểm tra rò: 446 mesh ngoài xe giữ nguyên vật liệu gốc.
+
+## 19. Máy trạng thái cử động (Task 3.4, 2026-09-27)
+
+Trước đây phần cử động rải rác thẳng trong `frame()`: đuôi vẩy theo
+`sin(now*0.0035 + tốc độ*0.04)`, tai đậy theo hai tần số, đầu nghiêng theo
+`sin(now*0.004)`. Chúng **không biết mèo đang làm gì** — đang phanh hay đang rã
+mái thì đuôi cũng vẩy y hệt, chỉ khác biên độ.
+
+### 19.1 Bảy trạng thái
+
+| trạng thái | khi nào | tín hiệu đọc được |
+|---|---|---|
+| `idle` | đứng yên | thở nhẹ, đuôi đung đưa |
+| `accel` | ga, còn dưới 75% tốc độ tối đa | mũi cúi, mèo chồm, tai ép |
+| `cruise` | giữ tốc độ | đuôi dựng, thẳng lưng |
+| `coast` | **thả ga còn đà** | mèo thả lỏng, đuôi hạ |
+| `turn` | rẽ | nghiêng vào phía rẽ, đầu ngoái theo |
+| `brake` | đang chạy tới mà lệnh lùi | mũi ngẩng, mèo chống, khăn văng |
+| `reverse` | đang lùi | lùi chậm, đuôi thấp |
+
+Nguyên tắc: **trộn THAM SỐ, không trộn tư thế**. Mỗi trạng thái đẩy ra một bộ
+giá trị đích (`ANIM_STATES`); chỉ có một bộ đang chạy (`ANIM_P`) nội suy về
+đích. Nhờ vậy chuyển trạng thái tự mượt, không cần blend weight giữa hai tư thế.
+
+Sở hữu: `ANIM_P` chỉ được ghi trong `updateAnimGraph()`. Trong `frame()` chỉ đọc.
+Tư thế theo địa hình (`targetPitch`/`targetRoll`) vẫn thuộc `settleToGround()` —
+anim **cộng thêm** tại đúng một chỗ áp dụng, không ghi đè biến của nhau.
+
+### 19.2 Quán tính — phát hiện bắt buộc
+
+Hai trạng thái `accel` và `brake` **không tồn tại được** nếu xe không có quán
+tính. Bản đầu dùng `speed = fwd * conf.speed * boost` làm thẳng tốc độ di
+chuyển: bấm W là tối đa ngay khung sau, buông là dừng sặc. Máy trạng thái thấy
+tốc độ nhảy thẳng 0 → 100% nên không bao giờ ở lại `accel`.
+
+Nay dùng hằng số thời gian mũ (ổn định ở mọi tần số khung hình):
+
+```js
+const tau = Math.abs(cmdSpeed) < Math.abs(speedReal) ? BRAKE_TAU : ACCEL_TAU;
+speedReal += (cmdSpeed - speedReal) * (1 - Math.exp(-dt / tau));
+```
+
+`ACCEL_TAU = 0.40s` (hết ~63% quãng), `BRAKE_TAU = 0.22s` (phanh gọn hơn ga).
+
+### 19.3 Ổ gi: JERK, và bump là XUNG chứ không phải trạng thái
+
+`bump` **không phải** một trạng thái ngang hàng. Nó là một xung 0.4s phủ lên
+trạng thái nền — vạch đá giữa lúc đang cruise thì vẫn phải đọc ra `cruise`.
+Có bảng riêng thì vẫn phải tách, nhưng bảng đã bỏ hẳn `bump` khỏi
+`ANIM_STATES` để không bao giờ ghi đè trạng thái nền.
+
+Ba cách nhận diện, hai cách đầu **đều sai và đều bị đo chứng minh**:
+
+| cách | vấn đề | số đo |
+|---|---|---|
+| ngưỡng trên lệch mỗi khung `dy < -5.5cm` | ở 100 FPS, 15m/s thì xe chạy 15cm/khung — chỉ cần dốc **20°** là vượt ngưỡng | `bump` bắn liên tục khi đi trên đất bằng |
+| lệch với đường xu hướng `_smoothY` | sai số của bộ lọc trễ **tỉ lệ với tốc độ leo** | p90 = **3.9m**, max = **13.5m** trên đường bằng |
+| **JERK = dy − bình quân gần đây** ✅ | dốc đều cho `dy` không đổi nên jerk = 0 | đứng yên p50=0; đi thẳng p50=0.0006 p90=0.134 p99=0.455 |
+
+Ngưỡng chọn `jerk > 0.22` (~p95 trên đường gồ ghề) và cooldown 0.55s. Đo được:
+đi thẳng **cruise 100%** thời gian, đứng yên **idle 100%**; xung bump phủ ~43%
+— tức là địa hình này thật sự gồ ghề, đúng cảm giác muốn.
+
+### 19.4 Phân biệt phanh với lùi
+
+`fwd < 0` nghĩa là **cả** phanh **lẫn** lùi. Bản đầu trả `'brake'` cho cả hai nên
+`reverse` không bao giờ tới. Phải xét **hướng đang chạy thật**:
+
+```js
+if (fwd < -0.05) return speed > 0 ? 'brake' : 'reverse';
+```
+
+Và `fwd ≈ 0` còn đà là `coast` — trạng thái này **không có trong kế hoạch**, lộ ra
+khi probe bấm S mà vẫn giữ W: `fwd` triệt tiêu về 0 và rơi nhầm vào `accel`.

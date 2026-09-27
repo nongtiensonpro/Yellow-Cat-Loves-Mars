@@ -3553,6 +3553,132 @@ function updateJournalPhase3(){
 }
 
 
+// ════════════════════════════════════════════════════════════════════════════
+// ANIMATION GRAPH — Phase 3 Task 3.4
+//
+// Trước đây phần cử động rải rác ngay trong frame(): đuôi vẩy theo sin(now*0.0035),
+// tai đậy theo hai tần số, đầu nghiêng theo sin(now*0.004). Chúng không biết
+// MÈO ĐANG LÀM GÌ — dù đang phanh hay đang rã mái thì đuôi cũng vẩy y hệt.
+//
+// Nay có máy trạng thái thật. Nguyên tắc: **trộn THAM SỐ, không trộn tư thế**.
+// Mỗi trạng thái đẩy ra một bộ giá trị đích; chỉ có một bộ tham số đang chạy,
+// nội suy về đích mỗi khung. Nhờ vậy chuyển trạng thái tự mượt, không cần
+// blend weight giữa hai tư thế.
+//
+// SỞ HỮU: đây là nơi DUY NHẤT ghi các biến trong ANIM_P. Trong frame() chỉ
+// ĐỌC chúng ra dùng. Tư thế xe theo địa hình (targetPitch/targetRoll) vẫn thuộc
+// về settleToGround(); anim graph CỘNG thêm của mình, không ghi đè.
+// ════════════════════════════════════════════════════════════════════════════
+const ANIM_STATES = {
+  //           pitch  roll   squat  tailLift tailSide earBack headTurn crouch scarf
+  idle:      { pitch: 0.000, roll: 0.000, squat:0.00, tailLift: 0.10, tailSide:0.05, earBack:0.00, headTurn:0.00, crouch:0.00, scarf:0.05 },
+  accel:     { pitch:-0.030, roll: 0.000, squat:0.06, tailLift:-0.18, tailSide:0.02, earBack:-0.55, headTurn:0.00, crouch:0.35, scarf:0.55 },
+  cruise:    { pitch:-0.016, roll: 0.000, squat:0.03, tailLift: 0.34, tailSide:0.10, earBack:-0.18, headTurn:0.00, crouch:0.10, scarf:0.30 },
+  // THẢ GA: xe còn đà mà không còn lệnh tăng tốc. Trước đây rơi vào 'accel' vì
+  // ngưỡng chỉ xét tốc độ — nhưng coast và accel trông hật khác nhau: mèo thả lỏng,
+  // đuôi hạ, không cúi như lúc mới rồ ga.
+  coast:     { pitch: 0.006, roll: 0.000, squat:0.02, tailLift: 0.20, tailSide:0.08, earBack:-0.05, headTurn:0.00, crouch:0.05, scarf:0.15 },
+  brake:     { pitch: 0.042, roll: 0.000, squat:0.14, tailLift: 0.55, tailSide:0.06, earBack:-0.70, headTurn:0.00, crouch:0.20, scarf:0.80 },
+  turn:      { pitch: 0.000, roll: 0.000, squat:0.05, tailLift: 0.42, tailSide:0.00, earBack:-0.30, headTurn:0.00, crouch:0.22, scarf:0.45 },
+  reverse:   { pitch: 0.020, roll: 0.000, squat:0.04, tailLift: 0.05, tailSide:0.04, earBack: 0.10, headTurn:0.00, crouch:0.15, scarf:0.20 },
+};
+const ANIM_KEYS = Object.keys(ANIM_STATES.idle);
+const ANIM_P = {};
+for (const k of ANIM_KEYS) ANIM_P[k] = ANIM_STATES.idle[k];
+
+let animState = 'idle', animStateSince = 0, animRoll = 0;
+// Tốc độ thật (đơn vị như conf.speed). Tách khỏi tốc độ lệnh để có quán tính.
+let speedReal = 0;
+const ACCEL_TAU = 0.40;   // giây — hết ~63% quãng trong 0.4s
+const BRAKE_TAU = 0.22;   // phanh gọn hơn ga
+// Phát hiện ổ gi: bánh rơi xuống đột ngột (giảm cao độ rõ rệt) → trạng thái bump.
+let _bumpT = -999, _bumpMag = 0, _bumpInit = false;
+let _prevY = 0, _dyAvg = 0;   // chỉ dùng cho jerk
+
+/** Phân loại trạng thái từ input + vận tốc + địa hình. */
+function classifyAnim(fwd, turn, speed, conf){
+  const spd = Math.abs(speed), mx = conf.speed || 1;
+  if (spd < mx*0.06) return 'idle';
+  // Lệnh lùi khi ĐANG CHẠY TỚI = phanh. Đang đã lùi = lùi. Không được gộp:
+  // bản đầu trả 'brake' cho cả hai nên trạng thái 'reverse' không bao giờ tới.
+  if (fwd < -0.05) return speed > 0 ? 'brake' : 'reverse';
+  if (Math.abs(fwd) < 0.05) return 'coast';   // thả ga, đang trôi
+  if (Math.abs(turn) > 0.30 && spd > mx*0.15) return 'turn';
+  // Ngưỡng 0.75 thay vì 0.45: xe tăng tốc trong ~0.4s nên 0.45 là quá ngắn,
+  // accel lướt qua không kịp nhìn thấy.
+  if (spd < mx*0.75) return 'accel';
+  return 'cruise';
+}
+
+/**
+ * Nhận diện ổ gi bằng JERK — gia tốc dọc đột ngột.
+ *
+ * Hai cách trước đều sai, và cả hai đều do đo chứng minh chứ không phải do đoán:
+ *
+ * 1) Ngưỡng trên lệch mỗi khung (dy < -5.5cm): ở 100 FPS, 15m/s thì xe chạy 15cm
+ *    mỗi khung, nên chỉ cần dốc 20° là vượt ngưỡng -> bump bắn liên tục.
+ * 2) Lệch với đường xu hướng (_smoothY): bộ lọc trễ tạo ra sai số TỈ LỆ VỚI TỐC ĐỘ
+ *    LEO. Đo được p90 = 3.9m, max = 13.5m trên đường bằng — vô lý, vì đó là
+ *    phép trễ chứ không phải địa hình.
+ *
+ * JERK = dy trừ đi bình quân gần đây. Dốc đều cho dy không đổi nên jerk = 0;
+ * bậc đất, vấp đá thì dy đổi đột ngột nên jerk nhảy. Đo được: đứng yên p50=0,
+ * đi thẳng p50=0.0006 p90=0.134 p99=0.455.
+ *
+ * Ngưỡng 0.22m ~ p95 trên đường gồ ghề: đi bằng phẳng hầu như không bắn, đi đá
+ * thì rung — đúng cảm giác.
+ */
+function detectBump(now, rideY, dt){
+  if (!_bumpInit){ _prevY = rideY; _dyAvg = 0; _bumpInit = true; return 0; }
+  const dy = rideY - _prevY; _prevY = rideY;
+  _dyAvg += (dy - _dyAvg) * (1 - Math.exp(-dt*10));
+  const jerk = _dyAvg - dy;
+  if (jerk > 0.22 && now - _bumpT > 0.55){
+    _bumpT = now; _bumpMag = Math.min(1, jerk/0.55);
+  }
+  const age = now - _bumpT;
+  if (age > 0.40) return 0;
+  // Lên nhanh rồi tắt dần: cảm giác "bánh rơi xuống rồi hấp thụ lại"
+  return _bumpMag * (1 - age/0.40);
+}
+
+/**
+ * Cập nhật máy trạng thái. Gọi mỗi khung, trước khi áp tư thế.
+ * `speed` là tốc độ dọc (m/frame-ish như conf.speed), `turn` đã chuẩn hoá -1..1.
+ */
+function updateAnimGraph(now, dt, fwd, turn, speed){
+  const conf = VEHICLES[vehicleType];
+  const bumpMag = detectBump(now, playerPos.y, dt);
+  const want = classifyAnim(fwd, turn, speed, conf);
+
+  if (want !== animState){ animState = want; animStateSince = now; }
+  const tAge = Math.min(1, (now - animStateSince) / 0.22);   // trộn vào trạng thái mới
+  const s = ANIM_STATES[animState];
+
+  // Nghiêng khi rẽ: nghiêng VÀO phía rẽ. Hằng số dấu đảo được nếu hình ảnh ngược.
+  animRoll += ((-turn) - animRoll) * (1 - Math.exp(-dt*6.0));
+  const TURN_LEAN = 0.22;
+
+  for (const k of ANIM_KEYS){
+    let target = s[k];
+    // Nhịp thở khi đứng yên: biên độ nhỏ, chỉ ở idle
+    if (animState === 'idle' && k === 'squat'){
+      target += Math.sin(now*0.0016)*0.012;
+    }
+    // XUNG Ổ GI phủ lên trạng thái nền. Đây là kênh độc lập: vạch đá xảy ra
+    // giữa lúc đang cruise thì vẫn phải đọc ra cruise, không phải bump.
+    if (k === 'squat')       target -= bumpMag * 0.26;
+    else if (k === 'pitch')  target += bumpMag * 0.10 * Math.sin(now*0.05);
+    else if (k === 'scarf')  target += bumpMag * 0.55;
+    else if (k === 'earBack')target -= bumpMag * 0.45;
+    else if (k === 'tailLift') target += bumpMag * 0.30;
+    const k2 = 1 - Math.exp(-dt * (tAge >= 1 ? 7.0 : 14.0));
+    ANIM_P[k] += (target - ANIM_P[k]) * k2;
+  }
+  ANIM_P.roll = animRoll * TURN_LEAN;
+  return { state: animState, bump: +bumpMag.toFixed(3), age: +(now - animStateSince).toFixed(2) };
+}
+
 function frame(now){
   requestAnimationFrame(frame);
   const dt=Math.min(0.033, (now-lastT)/1000); lastT=now;
@@ -3576,7 +3702,18 @@ function frame(now){
   fwd = THREE.MathUtils.clamp(fwd, -1, 1);
   turn = THREE.MathUtils.clamp(turn, -1, 1);
   const boost = input.boost ? 1.6 : 1;
-  const speed = fwd * conf.speed * boost;
+  const cmdSpeed = fwd * conf.speed * boost;
+
+  // ---- QUÁN TÍNH: tốc độ THẬT nội suy về tốc độ LỆNH --------------------
+  // Trước đây speed = fwd*conf.speed*boost dùng THẲNG làm tốc độ di chuyển:
+  // bấm W là lên tốc độ tối đa ngay khung kế tiếp, buông là dừng sặc. Ngoài cảm
+  // giác lái cứng, nó cắt mất hai trạng thái accel và brake của anim graph —
+  // máy trạng thái không thể phân biệt "đang tăng tốc" với "đã đạt tốc độ".
+  // Hằng số thời gian mũ nên ổn định ở mọi tần số khung hình.
+  const tau = Math.abs(cmdSpeed) < Math.abs(speedReal) ? BRAKE_TAU : ACCEL_TAU;
+  speedReal += (cmdSpeed - speedReal) * (1 - Math.exp(-dt / tau));
+  if (Math.abs(speedReal) < 0.004) speedReal = 0;   // chết máy khi lỡ tay còn vương
+  const speed = speedReal;
   speedKmh = Math.abs(speed*3.2);
   // ── HUD gọn khi lái (Task 1.5) ──
   // Đang di chuyển → ẩn gợi ý phím, thanh công cụ, bộ chọn phương tiện, pill
@@ -3637,7 +3774,11 @@ function frame(now){
   // ══════ HƯỚNG XE: yaw đúng trục + nghiêng theo địa hình ══════
   // Lưu ý: mô hình có +X là hướng đi, nên yaw phải là -playerYaw
   // (Three.js rotateY dương đưa +X về +Z, còn phương đi là (cos,sin) ở XZ).
-  player.rotation.set(targetPitch, -playerYaw, targetRoll, 'YXZ');
+  // Máy trạng thái: chạy TRƯỚC khi áp tư thế để ANIM_P đã sẵn sàng.
+  const _anim = updateAnimGraph(now, dt, fwd, turn, speed);
+  // Tư th xe = NGHIÊNG ĐỊA HÌNH (settleToGround sở hữu) + ĐÓNG GÓP CỦA ANIM.
+  // Cộng tại đúng một chỗ áp dụng, không ghi đè biến của nhau.
+  player.rotation.set(targetPitch + ANIM_P.pitch, -playerYaw, targetRoll + ANIM_P.roll, 'YXZ');
 
   // ══════ CHỐT CHẶN CUỐI: không bánh nào được chìm vào địa hình ══════
   // Ở đây transform đã áp dụng xong nên đọc world matrix là chính xác tuyệt
@@ -3663,10 +3804,17 @@ function frame(now){
   for(const w of vRefs.wheels){ w.rotation.x += wheelSpin*0.06; }
   wheelSpin *= 0.90;
   if(vRefs.pedal) vRefs.pedal.rotation.x += wheelSpin*0.05;
-  if(vRefs.tail) vRefs.tail.rotation.y = Math.sin(now*0.0035 + speedKmh*0.04)*(0.25 + Math.min(0.5, speedKmh*0.012));
+  // Đuôi: góc Y cơ bản lấy từ ANIM_P (chỉ đích), cộng thêm sóng động.
+  if(vRefs.tail) vRefs.tail.rotation.y = ANIM_P.tailLift + ANIM_P.tailSide
+    + Math.sin(now*0.0035 + speedKmh*0.04)*(0.10 + Math.min(0.28, speedKmh*0.008));
   if(vRefs.dish) vRefs.dish.rotation.y = Math.sin(now*0.0012)*0.9;
   if(vRefs.mast) vRefs.mast.rotation.y = Math.sin(now*0.0008+1.3)*0.7;
-  if(vRefs.head) vRefs.head.rotation.z = Math.sin(now*0.004)*0.05 * (1 + Math.min(1, speedKmh*0.02));
+  // Đầu: NGHIÊNG VỀ phía rẽ (headTurn) + run nhẹ. ANIM_P là nguồn duy nhất.
+  if(vRefs.head){
+    vRefs.head.rotation.y = ANIM_P.headTurn * 0.55;
+    vRefs.head.rotation.z = Math.sin(now*0.004)*0.035 * (1 + Math.min(1, speedKmh*0.02))
+      + ANIM_P.headTurn*0.12;
+  }
   // Mèo sống: tai động đậy, đuôi vẩy, đèn LED nhấp nháy, khăn đuôi bay
   // Góc nhìn thứ nhất = mắt Mèo: ẩn đầu + mũ (self-head) để không che tay.
   if(camMode===0){
@@ -3680,21 +3828,26 @@ function frame(now){
     if(vRefs.helmet) vRefs.helmet.visible=true;
     if(vRefs.cabin) vRefs.cabin.visible=true;
   }
+  // Tai: gật theo trạng thái (earBack) + gió vẫy. Khi GA nhanh tai ép sát đầu —
+  // đây là tín hiệu đọc được nhất khi đang phanh.
   if(vRefs.ears && vRefs.ears.length){
     const gust=Math.sin(now*0.0016)+0.5*Math.sin(now*0.0043+1.1);
-    vRefs.ears[0].rotation.x = gust*0.10 - 0.10;
-    if(vRefs.ears[1]) vRefs.ears[1].rotation.x = -gust*0.10 - 0.10;
+    vRefs.ears[0].rotation.x = gust*0.10 - 0.10 + ANIM_P.earBack*0.5;
+    if(vRefs.ears[1]) vRefs.ears[1].rotation.x = -gust*0.10 - 0.10 + ANIM_P.earBack*0.5;
   }
+  // Sóng chạy dọc đuôi: biên độ do tailLift quyết định (đuôi dựng khi phanh).
   if(vRefs.tailSegs && vRefs.tailSegs.length){
-    // sóng chạy dọc đuôi
+    const amp = 0.05 + Math.abs(ANIM_P.tailLift)*0.30;
     for(let i=0;i<vRefs.tailSegs.length;i++)
-      vRefs.tailSegs[i].rotation.y = Math.sin(now*0.006 - i*0.7)*(0.10 + Math.min(0.22, speedKmh*0.006));
+      vRefs.tailSegs[i].rotation.y = ANIM_P.tailLift*0.5 + ANIM_P.tailSide
+        + Math.sin(now*0.006 - i*0.7)*amp;
   }
   if(vRefs.helmet && vRefs.helmet.children.length>3){
     const ledM=vRefs.helmet.children[3];
     if(ledM.material) ledM.material.emissiveIntensity = 0.7 + 1.4*(0.5+0.5*Math.sin(now*0.006));
   }
-  if(vRefs.scarf) vRefs.scarf.rotation.y = Math.sin(now*0.0042)*(0.12 + Math.min(0.55, speedKmh*0.018));
+  // Khăn: bay mạnh khi phanh/va chạm (scarf), gần như đứng yên khi đi chậm.
+  if(vRefs.scarf) vRefs.scarf.rotation.y = Math.sin(now*0.0042)*(0.05 + ANIM_P.scarf*0.85);
 
   // paws
   for(const p of pawItems){
@@ -4124,6 +4277,11 @@ window.__yc={ THREE, scene, player, camera, renderer, BIOMES, POIS, heightAt, sa
   // đọc __yc.renderer.info là undefined. Chỉ thêm tên chưa có.
   composer:()=>composer, postFXOn:()=>postEnabled, HF:()=>HF,
   sunScreen:()=>_sunScreen,
+  animInfo:()=>({ state:animState, age:animStateSince, bump:_bumpMag,
+    P:Object.fromEntries(Object.entries(ANIM_P).map(([k,v])=>[k,+v.toFixed(4)])),
+    turn:+animRoll.toFixed(3), terrainPitch:+targetPitch.toFixed(4), terrainRoll:+targetRoll.toFixed(4) }),
+  animStates:()=>Object.keys(ANIM_STATES),
+  animState:()=>animState,
   setDust(v){ dustLevel = THREE.MathUtils.clamp(v,0,1); return dustLevel; },
   dustInfo(){ const d=_dustMats[0];
     const num = v => (typeof v === 'number' && isFinite(v)) ? +v.toFixed(3) : null;
