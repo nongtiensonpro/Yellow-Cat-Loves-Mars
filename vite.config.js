@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
-import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, statSync,
+         mkdirSync, copyFileSync, existsSync } from 'node:fs';
 import { join, posix, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -62,9 +63,42 @@ function injectSwManifest() {
 // https://<user>.github.io/Yellow-Cat-Loves-Mars/ lẫn file mở trực tiếp.
 // `strictPort` báo lỗi ngay thay vì tự nhảy port; `hmr` khai báo tường minh
 // host/port/protocol nên client luôn nối đúng chỗ, kể cả khi mở bằng IP LAN.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Plugin: chép bộ giải mã Draco vào dist/.
+//
+// Draco nén .glb từ 852 KB xuống 105 KB, nhưng Three.js phải NẠP thêm bộ giải
+// mã để đọc (draco_wasm_wrapper.js + draco_decoder.wasm). Không có nó thì asset
+// ném lỗi "No DRACOLoader instance provided". Không tải từ CDN lúc chạy — dự án
+// static-first, CI chặn CDN. Vì vậy chép thẳng từ node_modules lúc build;
+// không commit 250 KB file nhị phân của bên thứ ba vào repo.
+// ─────────────────────────────────────────────────────────────────────────────
+function copyDracoDecoder() {
+  return {
+    name: 'copy-draco-decoder',
+    apply: 'build',
+    closeBundle() {
+      const src = join(process.cwd(), 'node_modules', 'three', 'examples', 'jsm', 'libs', 'draco');
+      const dst = join(process.cwd(), 'dist', 'draco');
+      mkdirSync(dst, { recursive: true });
+      // draco_decoder.js là bản dự phòng khi trình duyệt không có WASM
+      for (const f of ['draco_wasm_wrapper.js', 'draco_decoder.wasm', 'draco_decoder.js']) {
+        const from = join(src, f);
+        if (existsSync(from)) copyFileSync(from, join(dst, f));
+        else this.warn(`thiếu ${f} trong three/examples/jsm/libs/draco`);
+      }
+    },
+  };
+}
+
 export default defineConfig({
   base: './',
-  plugins: [injectSwManifest()],
+  // THỨ TỰ QUAN TRỌNG: copyDracoDecoder phải chạy TRƯỚC injectSwManifest.
+  // Cả hai đều hook closeBundle, và plugin đứng trước chạy trước — nếu manifest
+  // đi trước thì nó quét dist/ lúc bộ giải mã Draco chưa được chép vào, khiến
+  // draco_wasm_wrapper.js và draco_decoder.wasm không có trong precache → offline
+  // hỏng đúng lúc cần nạp Mèo Vàng.
+  plugins: [copyDracoDecoder(), injectSwManifest()],
   server: {
     host: '0.0.0.0',
     port: 5173,

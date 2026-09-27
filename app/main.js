@@ -7,6 +7,12 @@ import { ShaderPass }      from 'three/examples/jsm/postprocessing/ShaderPass.js
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass }      from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { FXAAShader }      from 'three/examples/jsm/shaders/FXAAShader.js';
+// Hero asset glTF — Mèo Vàng dựng bằng Blender (scripts/build-meo-vang.py).
+// Draco nén 852 KB -> 105 KB nhưng cần bộ giải mã; vite.config.js chép sẵn vào
+// dist/draco/. Đường dẫn tính từ document.baseURI vì base='./' (Pages nằm ở
+// subpath) — đường dẫn tuyệt đối '/draco/' sẽ 404 trên GitHub Pages.
+import { GLTFLoader }      from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { DRACOLoader }     from 'three/examples/jsm/loaders/DRACOLoader.js';
 
 // ---------- Config ----------
 const BIOMES = [
@@ -1553,6 +1559,92 @@ var BODY_LIFT = 0;
 let vRefs = { wheels:[], dish:null, mast:null, tail:null, head:null, scarves:[] };
 // Cache hình học bánh: {x,z} offset cục bộ, y = cao độ đáy bánh khi group ở gốc.
 let wCache=[];
+// ════════════════════════════════════════════════════════════════════════════
+// HERO ASSET — MÈO VÀNG GLB (Blender)
+//
+// Trước đây Mèo Vàng là procedural: 40+ khối Sphere/Capsule dựng trong JS.
+// Nay có bản glTF dựng offline bằng Blender, giữ UV, tên node theo quy ước
+// (body/head/arms/tail_1..5/tail_tip) để Three.js vẫn cử động được từng phần.
+// Bản procedural GIỮ LẠI làm phương án dự phòng: nếu GLB lỗi (mạng, decode)
+// game vẫn chạy được chứ không trắng màn.
+//
+// Toạ độ: gốc model = điểm ngồi trên yên → đặt tại local (0, 1.25, 0).
+// Kiểm chứng: node 'head' dịch (0.30, 0.53, 0) → (0.30, 1.78, 0) — khớp đúng
+// vị trí đầu của bản procedural.
+const MEO_URL   = new URL('./assets/models/meo-vang.glb', document.baseURI).href;
+const MEO_LIFT  = 1.25;          // gốc GLB (yên) nằm cao bao nhiêu so vất đất
+let meoGLTF = null, meoUseGLB = false, meoLoadErr = null;
+
+function loadMeoVang(){
+  try {
+    const draco = new DRACOLoader();
+    draco.setDecoderPath(new URL('draco/', document.baseURI).href);
+    new GLTFLoader().setDRACOLoader(draco).load(MEO_URL, (gltf) => {
+      meoGLTF = gltf.scene;
+      meoGLTF.traverse(o => {
+        if (!o.isMesh) return;
+        o.castShadow = o.receiveShadow = true;
+        o.frustumCulled = true;
+        // Gắn normal/roughness thủ tục GIỐNG xe & đất: GLB chỉ có màu phẳng,
+        // không có map thì mèo sẽ trông lạc lõng giữa phần còn lại của game.
+        const m = o.material;
+        if (m && m.isMeshStandardMaterial && !m.userData.glossed){
+          const maps = makeSurfaceMaps({ seed: (m.color.getHex() * 2654435761) >>> 0,
+            rough: m.roughness ?? 0.6, scratch: 0.30, dust: 0.45, wear: 0.25, grain: 0.5 });
+          maps.normalMap.repeat.set(3,3); maps.roughnessMap.repeat.set(3,3);
+          m.normalMap = maps.normalMap; m.roughnessMap = maps.roughnessMap;
+          m.normalScale = new THREE.Vector2(0.7, 0.7);
+          m.userData.glossed = true;
+        }
+      });
+      meoUseGLB = true;
+      console.info('[meo] nạp GLB xong:', meoGLTF.children.length, 'node');
+      applyMeoSource();                 // dựng lại phương tiện để dùng GLB
+    }, undefined, (err) => {
+      meoLoadErr = err && err.message ? err.message : String(err);
+      console.warn('[meo] lỗi nạp GLB, dùng bản procedural:', meoLoadErr);
+    });
+  } catch (e) {
+    meoLoadErr = e.message;
+    console.warn('[meo] không khởi tạo được loader, dùng bản procedural:', meoLoadErr);
+  }
+}
+
+/** Dựng bản sao GLB, map vRefs sang node theo tên để code cử động cũ chạy được. */
+function buildMeoFromGLB(){
+  const cat = meoGLTF.clone(true);
+  cat.position.set(0, MEO_LIFT, 0);
+  const N = {};
+  cat.traverse(o => { if (o.name) N[o.name] = o; });
+  // Ánh xạ: code cũ dùng vRefs.head / vRefs.tail / vRefs.arms / vRefs.selfBody
+  vRefs.glbHead = N.head || null;
+  vRefs.glbBody = N.body || null;
+  vRefs.glbArms = N.arms || null;
+  vRefs.glbLegs = N.legs || null;
+  vRefs.glbTail = [N.tail_1, N.tail_2, N.tail_3, N.tail_4, N.tail_5, N.tail_tip].filter(Boolean);
+  // selfBody = phần thân tĩnh, ẩn ở góc nhìn thứ nhất (ngực che tay khi lái rover)
+  vRefs.glbSelf = [N.body, N.legs].filter(Boolean);
+  return cat;
+}
+
+
+/** Bật/tắt bản glTF. Gọi lại buildVehicle để áp dụng ngay. */
+function applyMeoSource(useGLB){
+  if (useGLB && !meoGLTF){
+    meoUseGLB = false;
+    console.warn('[meo] chưa có GLB, giữ bản procedural');
+  } else {
+    meoUseGLB = useGLB;
+  }
+  if (typeof buildVehicle === 'function' && vehicleType) buildVehicle(vehicleType);
+}
+
+// Gọi nạp GLB ở ĐÂY, không gọi cùng chỗ dựng landmark: hàm này đọc MEO_URL /
+// MEO_LIFT / meoGLTF, mà các biến đó khai báo bằng const/let ở DƯỚI đây —
+// gọi sớm hơn là rơi vào TDZ ("Cannot access 'X' before initialization") và
+// game không boot được. Thứ tự khai báo quan trọng, không phải thứ tự đọc.
+loadMeoVang();
+
 function buildVehicle(type){
   while(player.children.length) player.remove(player.children[0]);
   // KHÔNG gán lại vRefs: mọi ref đã push vào object cũ, gán lại sẽ làm rỗng
@@ -2015,6 +2107,15 @@ function buildVehicle(type){
   // Nâng cả Mèo lên trên yên
   const catLift=new THREE.Group();
   catLift.position.y=BODY_Y;
+  // Đổi sang bản glTF nếu đã nạp xong. Gốc GLB = điểm ngồi nên nâng MEO_LIFT,
+  // tương đương vị trí yên mà bản procedural đang ngồi.
+  if (meoUseGLB && meoGLTF){
+    cat.visible = false;                 // giữ procedural làm dự phòng, chỉ ẩn
+    const g = buildMeoFromGLB();
+    g.visible = true;
+    catLift.add(g);
+    vRefs.glbRoot = g;
+  }
   catLift.add(cat);
   g.add(catLift);
   cat.name='cat';
@@ -2429,6 +2530,13 @@ addEventListener('keydown', e=>{
   // Phím F: bật/tắt ô đo FPS + preset đồ họa. Cần khi người chơi muốn tự
   // xem máy mình chịu được bao nhiêu — không đoán giúp được, phải đo trên
   // phần cứng thật.
+  // Phím V: đổi Mèo Vàng giữa bản glTF dựng bằng Blender và bản procedural.
+  if(k==='v' && !e.repeat){
+    if (!meoGLTF){ showToast('🐱','Chưa có bản Blender','GLB chưa nạp xong — vẫn dùng bản procedural.'); }
+    else { applyMeoSource(!meoUseGLB);
+      showToast('🐱', meoUseGLB ? 'Mèo bản Blender' : 'Mèo bản procedural',
+        meoUseGLB ? 'glTF + Draco từ scripts/build-meo-vang.py' : 'Bản dựng bằng code'); }
+  }
   if(k==='f' && !e.repeat){
     const on = document.documentElement.dataset.perf === '1';
     document.documentElement.dataset.perf = on ? '0' : '1';
@@ -3525,8 +3633,11 @@ function updatePerfHud(dt){
 }
 
 // expose for debug
-window.__yc={ scene, player, camera, renderer, BIOMES, POIS, heightAt, sampleHeight, slopeAt, discovered, VEHICLES, setPlayerPos(x,z){ playerPos.x=x; playerPos.z=z; playerPos.y=sampleHeight(x,z)+VEHICLES[vehicleType].ride; settleToGround(); player.position.copy(playerPos); player.rotation.set(targetPitch, -playerYaw, targetRoll, 'YXZ'); player.updateMatrixWorld(true); },
+window.__yc={ THREE, scene, player, camera, renderer, BIOMES, POIS, heightAt, sampleHeight, slopeAt, discovered, VEHICLES, setPlayerPos(x,z){ playerPos.x=x; playerPos.z=z; playerPos.y=sampleHeight(x,z)+VEHICLES[vehicleType].ride; settleToGround(); player.position.copy(playerPos); player.rotation.set(targetPitch, -playerYaw, targetRoll, 'YXZ'); player.updateMatrixWorld(true); },
   setVehicle(t){ setVehicle(t); },
+  meoInfo(){ return { useGLB: meoUseGLB, loaded: !!meoGLTF, err: meoLoadErr,
+    nodes: meoGLTF ? meoGLTF.children.map(c=>c.name) : null }; },
+  setMeoSource(u){ applyMeoSource(u); return { useGLB: meoUseGLB }; },
   // Danh sách landmark cho probe: kind, vị trí, chiều cao beacon, số mesh con.
   landmarkInfo(){ return landmarks.map(l=>({ kind:l.userData.kind, x:Math.round(l.userData.x),
     z:Math.round(l.userData.z), topY:+l.userData.topY.toFixed(1), meshes:l.children.length })); },
