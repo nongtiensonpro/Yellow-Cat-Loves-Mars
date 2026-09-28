@@ -642,3 +642,82 @@ if (fwd < -0.05) return speed > 0 ? 'brake' : 'reverse';
 
 Và `fwd ≈ 0` còn đà là `coast` — trạng thái này **không có trong kế hoạch**, lộ ra
 khi probe bấm S mà vẫn giữ W: `fwd` triệt tiêu về 0 và rơi nhầm vào `accel`.
+
+## 20. Camera state theo tốc độ / địa hình (Task 3.5, 2026-09-27)
+
+Camera trước đây gắn cứng: `fov 68` bất biến, hướng nhìn bám thẳng vào xe, không
+có gì cho người chơi biết mình đang nhanh cỡ nào — và mọi chuyển hướng đều tức
+thời nên xe không có quy mô.
+
+### 20.1 Bốn kênh
+
+| kênh | làm gì | hằng số |
+|---|---|---|
+| FOV động | nở ra khi nhanh / boost | `+7` theo tốc độ, `+9` khi boost |
+| Trễ hướng nhìn | camera quay về phía xe sau một hằng số thời gian | `CAM_LAG_TAU = 0.13s` |
+| Rung chạm đất | lấy **trực tiếp** xung ổ gi của Task 3.4 | tắt dần `e^(-7t)` |
+| Chặn địa hình | dò 3 điểm phía trước, nâng tối đa 1.6m | |
+
+Đo được: FOV `68 → 75` (cruise) → `84` (boost); trễ góc lên tới `15.9°` khi rẽ rồi
+về `0`; rung đỉnh `0.46`; clearance FPV thấp nhất `1.99m` trên 135 mẫu, **0 khung**
+sát đất dưới 0.5m.
+
+Sở hữu: `camera.fov`, `_camYawLag`, `camShake`, `focusPass.enabled` chỉ được gán
+ở đúng một chỗ mỗi cái. `applyPostFX()` **không** đụng vào chúng.
+
+### 20.2 RATCHET — bẫy tự tạo, đã sửa
+
+Bản đầu chặn địa hình phía trước tính độ nâng từ `camera.position.y`:
+
+```js
+if (cl > camera.position.y) needLift = max(needLift, cl - camera.position.y);
+```
+
+Biến này **đã bị chính lệnh nâng khung trước sửa rồi**, nên mỗi khung lại nâng
+thêm một chút. Đo được camera bò lên `+12m` so với xe rồi rơi xuống `-5m` khi đi
+xuống dốc — nhìn như camera bị lỗi hay điên. Sửa: giữ riêng cao độ lý tưởng
+`idealY = playerPos.y + upH`, dò địa hình so với **đó**, rồi áp nâng lên `idealY`.
+
+### 20.3 Trễ camera người thứ ba: giảm hằng số KHÔNG triệt tiểu gốc rễ
+
+`lerp(a, b, 0.08)` mỗi khung nghĩa là hằng số thời gian phụ thuộc tần số khung
+(0.21s ở 60 FPS, 0.09s ở 144 FPS) — camera bám chặt ở máy nhanh, bỏ rơi ở máy chậm.
+
+Đổi sang hằng số thời gian mũ (`CAM_CHASE_TAU = 0.20s`) là đủ để giống nhau ở mọi
+tần số. Nhưng đo được trễ vẫn là **25.9m** ở tốc độ 6.2 m/s.
+
+Lý do: bất kỳ phép nội suy sau một điểm đích **đang di chuyển** nào cũng tụt lại ở
+trạng thái xác lập, và độ tụt **tỉ lệ với tốc độ**. Giảm `τ` chỉ đổi con số.
+
+Cách đúng là **bù trễ bằng phần dẫn tốc độ**: cho đích dẫn trước đúng `v·τ`. Ở trạng
+thái xác lập, độ trễ của phép nội suy (`v·τ`) và phần dẫn (`v·τ`) triệt tiêu nhau.
+Trong lúc tăng/giảm tốc độ vẫn còn trễ, nên **cảm giác xe nặng vẫn còn nguyên** —
+đây mới là điều ta muốn, chứ không phải camera cứng như đá.
+
+Đo được: trễ `25.9m → 7.5m` (mục tiêu là 9.5m phía sau theo `camDist`).
+
+### 20.4 Focus ở photo mode: tilt-shift, KHÔNG phải DOF
+
+Tên trong UI là "focus" nhưng nó **không dùng chiều sâu**. DOF thật cần depth
+buffer; `BokehPass` của three.js render **lại cảnh riêng** để lấy depth, tức nhân
+đôi số draw call mỗi khung. Đổi lại lấy hiệu ứng mờ rất nhẹ ở chế độ chụp ảnh thì
+không đáng.
+
+Đây là tilt-shift: mờ dần từ ngoài vào theo trục dọc, giữa khung sắc nét — giống
+ảnh tilt-shift trên máy ảnh film, hợp với "chụp kỷ niệm" hơn là DOF nhân vật.
+
+Chỉ bật ở photo mode: bật lúc lái thì cả khung hình mờ viền, tốn 9 mẫu/pixel mà
+không ai nhìn thấy tác dụng. `togglePhoto()` là nơi bật/tắt duy nhất.
+
+### 20.5 Bug có sẵn: `now` không có trong chữ ký
+
+`updateRidingPose(dt, steerInput, speed, boosting)` dùng `now` cho nhịp rung cổ
+tay khi boost mà không nhận `now`. Bấm Shift là `ReferenceError` **mỗi khung**
+(đo được 287 lần trong 5 giây), chết cả animation tay.
+
+Chỉ lộ ra khi probe bấm Shift — lái thường vẫn chạy bình thường nên rất dễ tưởng
+là không sao. `node --check` cũng không bắt, vì đây là lỗi runtime trong phạm vi
+tên, không phải lỗi cú pháp.
+
+Quy tắc: **mọi tham số dùng bên trong hàm phải nằm trong chữ ký hoặc khai báo
+ở module scope.** `now` là tham số của `frame()` nên không thuộc phạm vi đó.

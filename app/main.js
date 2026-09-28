@@ -148,7 +148,7 @@ let gfxName = (() => {
 // PHẢI khai báo TRƯỚC applyGraphicsPreset(): hàm đó được gọi lúc khởi tạo và gọi
 // applyPostFX(), nếu khai báo sau sẽ TDZ -> ReferenceError lúc boot. Đã dính lỗi
 // này một lần; giữ nguyên vị trí này.
-let composer = null, renderPass = null, bloomPass = null, fxaaPass = null, gradePass = null;
+let composer = null, renderPass = null, bloomPass = null, fxaaPass = null, gradePass = null, focusPass = null;
 let postEnabled = false;
 let hazePass = null, raysPass = null;
 
@@ -2520,7 +2520,7 @@ let targetPitch=0, targetRoll=0;
 //   • vai nhấp nhô nhẹ khi xe chạy, tay hơi chùng xuống khi chạy chậm
 //   • ghi đông xoay theo bánh xe đang quay
 let steerVis = 0, armBob = 0;
-function updateRidingPose(dt, steerInput, speed, boosting){
+function updateRidingPose(now, dt, steerInput, speed, boosting){
   if(!vRefs.arms || !vRefs.arms.length) return;
   const bar = vRefs.barPos;
   if(!bar) return;
@@ -2589,7 +2589,65 @@ function keepCamAboveGround(min=1.2){
   const g=sampleHeight(camera.position.x, camera.position.z)+min;
   if(camera.position.y < g) camera.position.y = g;
 }
+// ════════════════════════════════════════════════════════════════════════════
+// CAMERA STATE THEO TỐC ĐỘ / ĐỊA HÌNH — Phase 3 Task 3.5
+//
+// Camera trước đây gắn cứng: fov 68 cố định, hướng nhìn bám thẳng vào xe.
+// Không có gì báo cho người chơi biết mình đang nhanh cỡ nào, và mọi chuyển
+// hướng đều tức thời nên xe không có quy mô (khối lượng).
+//
+// Bốn kênh, mỗi kênh độc lập:
+//   1. FOV động      — trường nhìn nở ra khi nhanh / boost, hẹp lại khi chậm
+//   2. Trễ hướng nhìn — camera quay về phía xe sau một hằng số thời gian
+//   3. Rung chạm đất  — lấy trực tiếp xung ổ gi của Task 3.4
+//   4. Chặn địa hình — không để camera chui vào sườn phía trước
+//
+// SỞ HỮU: đây là nơi DUY NHẤT ghi camera.fov, _camYawLag và camShake.
+// ════════════════════════════════════════════════════════════════════════════
+const CAM_BASE_FOV = 68, CAM_FOV_SPEED = 7, CAM_FOV_BOOST = 9;
+const CAM_LAG_TAU   = 0.13;   // giây — trễ quay đầu (FOV/góc nhìn)
+const CAM_CHASE_TAU = 0.20;   // giây — trễ vị trí camera người thứ ba
+let _camYawLag = 0, _fovNow = CAM_BASE_FOV, camShake = 0, _shakeSeed = 0;
+let _lastChaseK = 0, _lastDt = 0;
+let _bumpForCam = 0;   // xung ổ gi, Task 3.4 ghi; camera chỉ ĐỌC
+
+/**
+ * Cập nhật FOV + trễ hướng nhìn + rung. Gọi MỘT LẦN mỗi khung ở đầu updateCamera,
+ * trước khi dựng vị trí — để các nhánh camera sau dùng chung trạng thái đã mượt.
+ */
+function updateCameraFeel(dt, speedFrac, boosting){
+  // 1) FOV động. Nội suy mũ để không giật khi đổi trạng thái boost.
+  const wantFov = CAM_BASE_FOV + speedFrac*CAM_FOV_SPEED + (boosting ? CAM_FOV_BOOST : 0);
+  _fovNow += (wantFov - _fovNow) * (1 - Math.exp(-dt/0.30));
+  if (Math.abs(camera.fov - _fovNow) > 0.01){
+    camera.fov = _fovNow;
+    camera.updateProjectionMatrix();
+  }
+  // 2) Trễ hướng nhìn: nội suy về yaw của xe. Rẽ thì khung hình quay sau một nhịp
+  //    rồi mới bám — đây là thứ cho cảm giác "xe có khối lượng". Offset cũng phải
+  //    quấn về 0, nếu không chênh lệch góc tích luỹ và camera xoay 360° sau vài
+  //    vòng đường cong.
+  let d = playerYaw - _camYawLag;
+  while (d >  Math.PI) d -= Math.PI*2;
+  while (d < -Math.PI) d += Math.PI*2;
+  _camYawLag += d * (1 - Math.exp(-dt/CAM_LAG_TAU));
+  // 3) Rung chạm đất. Lấy xung ổ gi sẵn có thay vì dựng cảm biến riêng.
+  if (_bumpForCam > camShake) camShake = _bumpForCam;
+  camShake *= Math.exp(-dt*7.0);
+  if (camShake > 0.002){
+    _shakeSeed += dt*47;
+    camera.position.x += Math.sin(_shakeSeed*1.7)*camShake*0.055;
+    camera.position.y += Math.sin(_shakeSeed*2.3 + 1.1)*camShake*0.045;
+    camera.rotation.z += Math.sin(_shakeSeed*1.3)*camShake*0.012;
+  }
+}
+
 function updateCamera(dt){
+  // Trạng thái camera dùng chung cho MỌI nhánh (FOV, trễ, rung) — gọi một lần ở
+  // đây, trước khi dựng vị trí. Nhánh nào cũng thừa hưởng.
+  const _mc = VEHICLES[vehicleType];   // conf chỉ có trong frame(), không có ở đây
+  const _sf = _mc.speed ? Math.min(1, Math.abs(speedReal)/_mc.speed) : 0;
+  updateCameraFeel(dt, _sf, !!input.boost);
   const py = sampleHeight(playerPos.x, playerPos.z)+1.2;
   if(photoMode || camMode===2){
     const r=camDist;
@@ -2610,7 +2668,10 @@ function updateCamera(dt){
     // Camera lùi lại SAU VAI MÈO một chút (và cao hơn đầu), để khung hình có
     // đủ khoảng cho: vai + hai cánh tay đang nắm ghi đông ở nửa dưới, còn
     // phía trên mở ra tầm nhìn đường đi. Khoảng cách ~1.1m + nhìn xuống nhẹ.
-    const fwd=_camFwd.set(Math.cos(playerYaw),0,Math.sin(playerYaw));
+    // HƯỚNG NHÌN CÓ TRỄ: fwd dùng _camYawLag (đã trễ), còn vị trí camera neo theo
+    // yaw thật. Tách hai thứ này ra là camera vừa bám xe vừa có quy mô.
+    const _yawLag = _camYawLag;
+    const fwd=_camFwd.set(Math.cos(_yawLag),0,Math.sin(_yawLag));
     const right=_camTmp.set(-fwd.z,0,fwd.x);              // hướng bên phải
     // Rover cabin to hơn & mèo ngồi cao hơn -> camera phải lùi xa và cao hơn
     // một chút, nếu không cabin sẽ chiếm gần hết khung hình.
@@ -2635,8 +2696,29 @@ function updateCamera(dt){
     if(vRefs.arms && vRefs.arms.length){ player.updateMatrixWorld(true); vRefs.arms[0].wrist.getWorldPosition(_camTmp); handY=_camTmp.y; handX=_camTmp.x; }
     const upH   = O ? O.up : (isRover ? 2.20 : (handY + 0.34 - playerPos.y));
     const backH = O ? O.bk : (isRover ? -0.80 : (handX - playerPos.x) - 1.15);
-    camera.position.copy(playerPos).addScaledVector(fwd, backH);
+    // Vị trí neo theo yaw THẬT: camera phải bám thân xe, còn hướng nhìn mới trễ.
+    const fwdReal = _camFwd.clone().set(Math.cos(playerYaw),0,Math.sin(playerYaw));
+    camera.position.copy(playerPos).addScaledVector(fwdReal, backH);
     camera.position.y = playerPos.y + upH;
+    // Chặn địa hình: không chỉ chặn dưới, mà còn phía TRƯỚC. Camera thấp sau vai
+    // mèo có thể bị sườn đồi phía trước nuốt mất nửa khung hình.
+    //
+    // PHẢI so với CAO ĐỘ LÝ TƯỞNG, không phải cao độ hiện tại. Bản đầu tính
+    // độ nâng từ camera.position.y — mà biến này đã bị chính lệnh nâng khung trước
+    // sửa rồi, nên mỗi khung lại nâng thêm một chút: RATCHET. Đo được camera bò
+    // lên tới +12m so với xe, rồi rơi xuống -5m khi đi xuống dốc. Giữ riêng cao
+    // độ lý tưởng rồi mới áp nâng lên CAO ĐỘ ĐÓ là hết.
+    const idealY = playerPos.y + upH;
+    let wantY = idealY;
+    for(const [ao,bo] of [[0.9,-0.5],[2.4,-0.3],[4.5,0]]){
+      const cx = camera.position.x + fwdReal.x*ao + right.x*bo;
+      const cz = camera.position.z + fwdReal.z*ao + right.z*bo;
+      const cl = sampleHeight(cx, cz) + 0.55;
+      if (cl > wantY) wantY = cl;
+    }
+    // Nâng tối đa 1.6m: quá tay thì camera bay lên trời mất mất hình xe.
+    if (wantY > idealY) wantY = Math.min(wantY, idealY + 1.6);
+    camera.position.y = wantY;
     keepCamAboveGround(0.9);
     // Nhìm về điểm trước-thấp: vừa thấy tay, vừa thấy đường
     const lookAhead = O ? O.la : 10.0;
@@ -2651,15 +2733,40 @@ function updateCamera(dt){
   } else {
     const r=camDist;
     const yaw = playerYaw + 0.15;
-    const x = playerPos.x - Math.cos(yaw)*r*0.95;
-    const z = playerPos.z - Math.sin(yaw)*r*0.95;
+    // BÙ TRỄ BẰNG PHẦN DẪN TỐC ĐỘ.
+    //
+    // Camera nội suy sau một điểm đích đang di chuyển sẽ LUÔN tụt lại phía sau
+    // ở trạng thái xác lập, và độ tụt TỈ LỆ VỚI TỐC ĐỘ — đo được 26m khi xe
+    // chạy 6.2 m/s, tức xe nhỏ như một hạt sỏi trong khung hình. Giảm hằng số
+    // trễ chỉ đổi con số, không triệt tiểu gốc rễ.
+    //
+    // Cách đúng: cho ĐÍCH đích dẫn trước đúng bằng v·τ. Ở trạng thái xác lập thì
+    // độ trễ của phép nội suy (v·τ) và phần dẫn (v·τ) triệt tiêu nhau -> camera
+    // đứng yên đúng chỗ mong muốn. Trong lúc tăng/giảm tốc độ vẫn còn độ trễ,
+    // nên cảm giác xe nặng vẫn còn nguyên — đây là điều ta muốn.
+    const vLead = CAM_CHASE_TAU * 12;     // conf.speed * 12 là hệ số quãng đường
+    const vx = Math.cos(playerYaw)*speedReal*vLead;
+    const vz = Math.sin(playerYaw)*speedReal*vLead;
+    const x = playerPos.x - Math.cos(yaw)*r*0.95 + vx;
+    const z = playerPos.z - Math.sin(yaw)*r*0.95 + vz;
     const y = sampleHeight(playerPos.x, playerPos.z)+ 2.8 + Math.sin(0.35)*1.2;
-    const tx = THREE.MathUtils.lerp(camera.position.x, x, 0.08);
-    const tz = THREE.MathUtils.lerp(camera.position.z, z, 0.08);
-    let ty = THREE.MathUtils.lerp(camera.position.y, y, 0.08);
+    // Trễ ĐỘC LẬP VỚI TỐC ĐỘ KHUNG HÌNH. Bản cũ dùng lerp hằng 0.08 mỗI KHUNG:
+    // ở 60 FPS nghĩa là hằng số thời gian ~0.21s, nhưng ở 144 FPS chỉ ~0.09s —
+    // camera bám chặt ở máy nhanh và bỏ rơi ở máy chậm. Đo được ở đây: xe chạy
+    // 50m/s còn camera tụt 16m phía sau, độ cao lệch tới ±12m khi đi xuống dốc.
+    // Hằng số thời gian mũ thì giống nhau ở mọi tần số.
+    const k = 1 - Math.exp(-dt/CAM_CHASE_TAU);
+    _lastChaseK = k; _lastDt = dt;
+    const tx = THREE.MathUtils.lerp(camera.position.x, x, k);
+    const tz = THREE.MathUtils.lerp(camera.position.z, z, k);
+    const ty = THREE.MathUtils.lerp(camera.position.y, y, k);
     camera.position.set(tx,ty,tz);
     keepCamAboveGround(1.4);
-    camera.lookAt(playerPos.x, sampleHeight(playerPos.x, playerPos.z)+1.0, playerPos.z);
+    // Nhìn về phía trước một chút theo hướng ĐÃ TRỄ, không nhìn thẳng vào xe:
+    // nhìn thẳng vào tâm xe làm khung hình đứng yên khi xe rẽ.
+    camera.lookAt(playerPos.x + Math.cos(_camYawLag)*1.6,
+                  sampleHeight(playerPos.x, playerPos.z)+1.0,
+                  playerPos.z + Math.sin(_camYawLag)*1.6);
   }
 }
 // ---------- Heightfield: đọc CHÍNH mesh đang vẽ (nguồn sự thật duy nhất) ----------
@@ -3015,6 +3122,10 @@ function togglePhoto(force){
   photoMode=show;
   document.getElementById('photo-bar').classList.toggle('show', show);
   if(show){ camMode=2; } else { camMode=1; }
+  // Focus/tilt-shift CHỈ có ý nghĩa khi đứng yên chụp ảnh. Bật ở ngoài photo mode
+  // thì cả lúc lái cũng mờ viền — tốn 9 mẫu/pixel mà không ai nhìn thấy tác dụng.
+  // Chỗ bật/tắt DUY NHẤT: applyPostFX cũng không đụng vào biến này.
+  if(focusPass) focusPass.enabled = photoMode;
 }
 function toggleHelp(){
   showToast('🐱','Mèo Vàng mách nhỏ','WASD để đi, Shift để tăng tốc, C đổi camera, M mở bản đồ, P chụp ảnh, L đổi giờ. Trên điện thoại dùng joystick góc trái và vuốt để xoay camera nhé!');
@@ -3649,6 +3760,7 @@ function detectBump(now, rideY, dt){
 function updateAnimGraph(now, dt, fwd, turn, speed){
   const conf = VEHICLES[vehicleType];
   const bumpMag = detectBump(now, playerPos.y, dt);
+  _bumpForCam = bumpMag;   // Task 3.5 chỉ ĐỌC xung này, không tự tính lại
   const want = classifyAnim(fwd, turn, speed, conf);
 
   if (want !== animState){ animState = want; animStateSince = now; }
@@ -3912,7 +4024,11 @@ function frame(now){
   updateJournalPhase3();
 
   // Động tác lái: cánh tay mèo bám ghi đông, xoay theo input.l-r thật
-  updateRidingPose(dt, (input.l?1:0) - (input.r?1:0), speedKmh, input.boost);
+  updateRidingPose(now, dt, (input.l?1:0) - (input.r?1:0), speedKmh, input.boost);
+// `now` PHẢI có trong chữ ký: bên trong dùng now cho nhịp rung cổ tay khi boost.
+// Bản trước dùng `now` mà không nhận -> ReferenceError MỖI KHUNG khi bấm Shift,
+// làm chết cả animation tay. Chỉ lộ ra khi probe bấm Shift; lái thường vẫn
+// chạy bình thường nên dễ tưởng là không sao.
   updateCamera(dt);
   renderer.info.reset();   // đặt lại ở đầu khung, cộng dồn qua mọi pass
   // Post-FX: composer.render() tự lo tone mapping + chuyển không gian màu
@@ -3975,6 +4091,47 @@ loadText.textContent='Đang dựng đồng bằng Arcadia và đánh thức Mèo
 //
 // Bật/tắt theo preset đồ họa: low không post gì, medium chỉ grade, high+ thêm
 // FXAA và bloom. Không có post-FX thì render thẳng như cũ.
+// ════════════════════════════════════════════════════════════════════════════
+// FOCUS / TILT-SHIFT — chỉ bật ở PHOTO MODE (Task 3.5)
+//
+// KHÔNG phải DOF theo chiều sâu. DOF thật cần depth buffer; BokehPass của three.js
+// render LẠI cảnh riêng để lấy depth, tức nhân đôi số draw call mỗi khung. Đổi lại
+// lấy hiệu ứng mờ rất nhẹ ở chế độ chụp ảnh thì không đáng.
+//
+// Đây là tilt-shift: làm mờ dần từ ngoài vào, giữa khung hình sắc nét. Nhìn giống
+// ảnh tilt-shift trên máy ảnh film, hợp với "chụp kỷ niệm" hơn là DOF nhân vật.
+// Vẫn ghi "focus" trong UI để không gọi nhầm tên.
+// ════════════════════════════════════════════════════════════════════════════
+const FocusShader = {
+  uniforms: { tDiffuse:{value:null}, uAmount:{value:0.0}, uFocus:{value:0.52}, uSoft:{value:0.42} },
+  vertexShader: `
+    varying vec2 vUv;
+    void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform float uAmount, uFocus, uSoft;
+    varying vec2 vUv;
+    void main(){
+      if(uAmount < 0.002){ gl_FragColor = texture2D(tDiffuse, vUv); return; }
+      // khoảng cách chuẩn hoá tới vùng tiêu cư
+      float d = abs(vUv.y - uFocus) / max(uSoft, 0.001);
+      float k = clamp(d*d*0.85, 0.0, 1.0) * uAmount;
+      if(k < 0.004){ gl_FragColor = texture2D(tDiffuse, vUv); return; }
+      // 9 mẫu theo hình thoi: 4 góc + 4 cạnh + 1 giữa
+      vec2 px = vec2(k) * 0.0055;
+      vec3 c = texture2D(tDiffuse, vUv).rgb * 0.20;
+      c += texture2D(tDiffuse, vUv + vec2( px.x, 0.0)).rgb * 0.10;
+      c += texture2D(tDiffuse, vUv + vec2(-px.x, 0.0)).rgb * 0.10;
+      c += texture2D(tDiffuse, vUv + vec2(0.0,  px.y)).rgb * 0.10;
+      c += texture2D(tDiffuse, vUv + vec2(0.0, -px.y)).rgb * 0.10;
+      c += texture2D(tDiffuse, vUv + vec2( px.x*0.7,  px.y*0.7)).rgb * 0.08;
+      c += texture2D(tDiffuse, vUv + vec2(-px.x*0.7,  px.y*0.7)).rgb * 0.08;
+      c += texture2D(tDiffuse, vUv + vec2( px.x*0.7, -px.y*0.7)).rgb * 0.07;
+      c += texture2D(tDiffuse, vUv + vec2(-px.x*0.7, -px.y*0.7)).rgb * 0.07;
+      gl_FragColor = vec4(c, 1.0);
+    }`,
+};
+
 const GradeShader = {
   uniforms: {
     tDiffuse:   { value: null },
@@ -4136,6 +4293,8 @@ function initPostFX(){
   fxaaPass = new ShaderPass(FXAAShader);
   composer.addPass(fxaaPass);
   gradePass = new ShaderPass(GradeShader);
+  focusPass = new ShaderPass(FocusShader);
+  focusPass.enabled = false;   // chỉ bật ở photo mode
   composer.addPass(gradePass);
   // Task 3.3. Thứ tự: grade -> haze -> rays -> output. Haze và rays cộng vào
   // ảnh ĐÃ tone-map, nên đặt sau grade để chúng không bị grade nén lại.
@@ -4144,6 +4303,7 @@ function initPostFX(){
   raysPass = new ShaderPass(GodRaysShader);
   raysPass.uniforms.uSunUV.value = new THREE.Vector2(0.5, 0.5);
   composer.addPass(raysPass);
+  composer.addPass(focusPass);
   composer.addPass(new OutputPass());
 }
 
@@ -4277,6 +4437,12 @@ window.__yc={ THREE, scene, player, camera, renderer, BIOMES, POIS, heightAt, sa
   // đọc __yc.renderer.info là undefined. Chỉ thêm tên chưa có.
   composer:()=>composer, postFXOn:()=>postEnabled, HF:()=>HF,
   sunScreen:()=>_sunScreen,
+  camMode:()=>camMode, focusOn:()=>!!(focusPass&&focusPass.enabled), camFovNow:()=>_fovNow, camDist:()=>camDist, speedKmh:()=>speedKmh,
+  camChaseTau:()=>CAM_CHASE_TAU, chaseK:()=>_lastChaseK, lastDt:()=>_lastDt,
+  camInfo:()=>({ fov:+camera.fov.toFixed(2), baseFov:CAM_BASE_FOV,
+    yawLag:+_camYawLag.toFixed(4), yawErr:+((playerYaw-_camYawLag)*180/Math.PI).toFixed(2),
+    shake:+camShake.toFixed(4), bump:+_bumpForCam.toFixed(3),
+    camY:+camera.position.y.toFixed(3) }),
   animInfo:()=>({ state:animState, age:animStateSince, bump:_bumpMag,
     P:Object.fromEntries(Object.entries(ANIM_P).map(([k,v])=>[k,+v.toFixed(4)])),
     turn:+animRoll.toFixed(3), terrainPitch:+targetPitch.toFixed(4), terrainRoll:+targetRoll.toFixed(4) }),

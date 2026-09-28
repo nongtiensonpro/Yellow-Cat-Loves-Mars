@@ -183,7 +183,7 @@ Mỗi Phase có Definition of Done + Task nhỏ (2–5 phút/task, TDD khi có l
 **Files:** `app/main.js`, `assets/models/*.glb` (rig)
 **Nội dung:** State: idle → accel → cruise → brake → turn lean → bump. Mèo look-at, tai/đuôi phản hồi tốc độ/địa hình.
 
-### Task 3.5 — Camera state theo tốc độ/địa hình
+### Task 3.5 — Camera state theo tốc độ/địa hình  ✅ 27/09/2026 (art-bible §20)
 **Files:** `app/main.js` (updateCamera)
 **Nội dung:** Framing theo tốc độ (FOV động khi boost), lag có kiểm soát, va chạm địa hình, rung nhẹ khi bánh chạm đất, DOF nhẹ ở photo mode.
 
