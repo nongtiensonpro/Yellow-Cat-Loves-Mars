@@ -124,6 +124,28 @@ khi đo trên thiết bị thật; con số giả sẽ thành cam kết hứa h�
 Trước mắt preset `low` là đường dự phánh duy nhất — không có post-FX, LOD ở mức
 thấp nhất, không có bóng đổ xa. Khi có máy thật để đo, bổ sung cột này.
 
+## Guard đỏ sai lý do cũng là một loại guard hỏng
+
+Lần chạy CI đầu tiên: job `verify` đỏ, deploy bị skip — đúng như thiết kế. Nhưng
+**không phải vì vượt ngân sách.**
+
+Nguyên nhân: `perf-budget.mjs` tìm trình duyệt trong danh sách chỉ có đường dẫn
+**Windows**, rồi `process.exit(1)` nếu không thấy. Runner Ubuntu không có đường
+dẫn nào trong danh sách.
+
+| | |
+|---|---|
+| kết quả mong muốn | đỏ vì vượt trần |
+| kết quả thực tế | đỏ vì không tìm thấy trình duyệt |
+
+Nguy hiểm không kém gì guard không bao giờ chạy: cả hai đều dạy người ta
+"bỏ qua CI đi". Đã sửa — liệt kê cả đường dẫn Linux, và fallback về Chromium
+có sẵn của Playwright, giống hệt `smoke-phase3.mjs`.
+
+Bài học cho mọi việc tự động hoá: **một guard phải thử đỏ một cách có chủ đích
+trước khi tin vào nó.** Ở đây việc đó tốn đúng một lần hạ trần tạm — và nó
+bắt ra cả lỗi lần chạy đầu.
+
 ## Khi nào CI đỏ
 
 `tests/perf-budget.mjs` trả về mã thoát khác 0 khi vượt bất kỳ trần nào. Job

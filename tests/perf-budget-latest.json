@@ -29,9 +29,9 @@
     "low": {
       "nm": "spawn     ",
       "textures": 61,
-      "geometries": 346,
-      "calls": 346,
-      "triangles": 100705,
+      "geometries": 345,
+      "calls": 344,
+      "triangles": 100485,
       "programs": 39,
       "textureMB": 22.71,
       "n1024": 0,
@@ -44,9 +44,9 @@
     "medium": {
       "nm": "spawn     ",
       "textures": 61,
-      "geometries": 488,
-      "calls": 352,
-      "triangles": 98457,
+      "geometries": 492,
+      "calls": 350,
+      "triangles": 98237,
       "programs": 40,
       "textureMB": 22.71,
       "n1024": 0,
@@ -59,9 +59,9 @@
     "high": {
       "nm": "spawn     ",
       "textures": 61,
-      "geometries": 494,
-      "calls": 367,
-      "triangles": 98472,
+      "geometries": 493,
+      "calls": 365,
+      "triangles": 98252,
       "programs": 41,
       "textureMB": 22.71,
       "n1024": 0,
@@ -75,8 +75,8 @@
       "nm": "spawn     ",
       "textures": 61,
       "geometries": 494,
-      "calls": 368,
-      "triangles": 98473,
+      "calls": 366,
+      "triangles": 98253,
       "programs": 42,
       "textureMB": 22.71,
       "n1024": 0,
@@ -88,5 +88,5 @@
     }
   },
   "errors": [],
-  "checkedAt": "2026-09-28T02:43:08.761Z"
+  "checkedAt": "2026-09-28T02:59:01.043Z"
 }

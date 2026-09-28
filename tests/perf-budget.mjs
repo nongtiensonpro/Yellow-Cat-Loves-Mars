@@ -35,9 +35,21 @@ const PLACES = [
 ];
 
 if (import.meta.url === `file:///${process.argv[1].replace(/\\/g,'/')}` || process.argv[1].endsWith('perf-budget.mjs')) {
-  const EXE = ['C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-               'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'].find(p=>existsSync(p));
-  if (!EXE){ console.error('Không tìm thấy trình duyệt'); process.exit(1); }
+  // Phải liệt kê cả Windows lẫn Linux, và phải FALLBACK về Chromium của
+  // Playwright. Lần đầu chỉ có đường dẫn Windows nên trên runner Ubuntu nó
+  // exit(1) — CI đỏ vì lý do SAI, không phải vì vượt ngân sách. Một guard đỏ
+  // sai nguyên nhân nguy hiểm ngang một guard không bao giờ chạy: cả hai đều
+  // khiến người ta mất niềm tin vào cả hệ thống.
+  const CANDIDATES = [
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    '/usr/bin/google-chrome',
+    '/usr/bin/microsoft-edge',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+  ];
+  const EXE = CANDIDATES.find(p=>{ try{ return existsSync(p); } catch { return false; } });
+  if (!process.env.CI) console.log('[budget] browser:', EXE || '(playwright bundled)');
 
   const b = await chromium.launch({ executablePath:EXE, headless:true,
     args:['--use-gl=angle','--enable-unsafe-swiftshader','--mute-audio'] });
@@ -89,7 +101,7 @@ if (import.meta.url === `file:///${process.argv[1].replace(/\\/g,'/')}` || proce
     }, null, 2));
 
     if (over.length || errs.length){
-      console.log(`\n>>> NGÂN SÁCH BỊ VƯỢT: ${over.join(', ') || 'lỗi runtime'}`);
+      console.log(`\n>>> NGÂN SÁCH BỊ VƯỢT: ${over.join(', ') || '(không hạng mục nào) — lỗi runtime: '+errs.slice(0,2).join(' | ')}`);
       console.log('    Tăng trần chỉ khi đã trả lời được: ngân sách này bảo vệ điều gì?');
       process.exit(1);
     }
