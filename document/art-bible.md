@@ -994,3 +994,53 @@ xa, mà không có triệu chứng nào khác. Đã chứng minh bắt được:
 báo `4 MB / 3 chiếc`.
 
 Chi tiết và số liệu: `document/perf-budget.md`.
+
+## 25. Mặt Mèo Vàng nhìn được (28/09/2026)
+
+### Vấn đề
+Mèo Vàng — nhân vật **đặt tên cho cả dự án** — chụp ảnh ra là một quả cầu trắng với
+dải kính vàng. Không đọc ra mèo.
+
+### Nguyên nhân: KHÔNG phải thiếu mặt, mà là bị kính nuốt
+Mặt dựng đầy đủ và đúng: mắt có mống/đồng tử dọc/điểm sáng, mí trên, mí dưới, mõm,
+mũi hồng, cằm, 6 ria, 2 tai. Không thiếu gì cả.
+
+Kính mũ là **vỏ cầu bán trước, phủ từ đỉnh xuống `0.72π ≈ 130°`** (quá cằm), vật
+liệu vàng `opacity 0.34`. Vì là **vỏ kín**, nhìn từ ngoài thấy cả mặt trước lẫn mặt
+sau của nó cộng lại → độ mờ thực ≈ **0.56**, và mặt mèo chìm thành vệt vàng.
+
+Đây là loại lỗi nguy hiểm vì nó **trông như thiếu hình học**. Người đọc code sẽ đi
+tìm xem mắt có ở đâu; người nhìn ảnh sẽ bảo "chắc mèo không có mặt".
+
+### Sửa
+| | trước | sau |
+|---|---|---|
+| kính | vỏ cầu, `opacity 0.34`, cả 2 mặt | `FrontSide` 1 lớp, `opacity 0.13`, `depthWrite:false` |
+| vành mặt | bán kính 0.352 × cao 1.16, tại x=0.152 | 0.318 × 1.20, tại x=0.238, ống 0.017 |
+| tai trong | nón 0.074×0.175 tại **x=0.322** (xa hơn tai ngoài 0.295) | 0.070×0.140 tại **x=0.276** (thụt trong tai ngoài) |
+| màu tai trong | `matPink` 0xff9db0 (hồng đậm, dùng chung với mũi) | `matEar` 0xf0a3ae (hồng nhạt) |
+
+Ba lỗi riêng biệt, ba nguyên nhân riêng biệt:
+
+1. **Kính hai lớp.** `side:FrontSide` là mấu chốt — bán cầu có hai mặt, và
+   `MeshPhysicalMaterial` vẽ cả hai.
+2. **Vành cắt ngang mõm.** Vòng quá to và quá sâu nên đọc thành lồng hamster ball
+   quanh mặt, không phải viền mũ.
+3. **Tai trong nhô ra trước tai ngoài.** Nón tai trong đặt ở x **lớn hơn** tai ngoài
+   và cùng hướng, nên đầu nhọn của nó chĩa ra ngoài thay vì nằm trong → đọc thành
+   **sừng hồng**. Chỉ cần thụt xuống dưới ngưỡng tai ngoài là thành tai.
+
+### Quyết định giữ nguyên
+`camMode 0` (FPV) **cố ý ẩn đầu + mũ + cabin** — camera là mắt của chính con mèo:
+```js
+if(camMode===0){ if(vRefs.head) vRefs.head.visible=false; ... }
+```
+Nên mặt chỉ hiện ở góc ngoài / photo / bản đồ quỹ trạng. Đây là lựa chọn đúng, giữ
+nguyên. Nhưng nó khiến mặt gần như vô hình ở góc chơi chính — càng lý do phải sửa
+kính, vì góc ngoài mới là chỗ duy nhất mặt được nhìn thấy.
+
+### Bài học
+- **`side:FrontSide` trên vỏ cầu** là `opacity` thực tế bằng **2×** con số khai báo.
+  Đọc `opacity: 0.34` dễ tưởng là 34%.
+- **Lỗi hình học đôi khi do vật liệu.** Kiểm tra `material` trước khi kết luận
+  "thiếu model".

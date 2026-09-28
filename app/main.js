@@ -2157,7 +2157,15 @@ function buildVehicle(type){
   const matFurD  = autoMat(0xe2961c, 0.4, 0.86); // sọc tabby
   const matCream = autoMat(0xfff3cf, 0.4, 0.88); // bụng/mõm
   const matPink  = autoMat(0xff9db0, 0.4, 0.5);
+// Hồng nhạt cho vành tai. matPink đậm dùng cho mũi/miệng — dùng lại ở tai thì
+// hai vệt hồng đậm cạnh nhau, mắt bị kéo sang màu vàng hồng.
+const matEar   = autoMat(0xf0a3ae, 0.55, 0.62);
   const matWhite = autoMat(0xf6f6ef, 0.18, 0.34);
+// Kính mũ. Một lớp, rất mờ, không ghi depth — để mặt mèo bên trong luôn đọc
+// được. `side:FrontSide` là mấu chốt: hai mặt của vỏ cầu cộng lại làm kính
+// đục lại, đó chính là lỗi đã làm Mèo Vàng mất mặt.
+const matVisor = new THREE.MeshPhysicalMaterial({ color:0xffe0a0, roughness:0.04, metalness:0.0,
+  transparent:true, opacity:0.13, side:THREE.FrontSide, depthWrite:false });
   const matGold  = new THREE.MeshPhysicalMaterial({color:0xffcb63, roughness:0.07, metalness:0.4,
                                                    transparent:true, opacity:0.34,
                                                    side:THREE.DoubleSide, depthWrite:false});
@@ -2293,8 +2301,11 @@ function buildVehicle(type){
   for(const s of [1,-1]){
     const outer=new THREE.Mesh(new THREE.ConeGeometry(0.118,0.27,13), matFur);
     outer.position.set(0.295,0.30,s*0.205); aim(outer,-0.16,0.72,s*0.67); headG.add(outer);
-    const inner=new THREE.Mesh(new THREE.ConeGeometry(0.074,0.175,11), matPink);
-    inner.position.set(0.322,0.295,s*0.222); aim(inner,-0.16,0.72,s*0.67); headG.add(inner);
+    // Tai trong phải NẰM TRONG tai ngoài. Trước đây đặt ở x=0.322 (xa hơn tai
+    // ngoài 0.295) với đầu nhọn chĩa ra ngoài ⇒ nó nhô ra trước, đọc thành
+    // SỪNG HỒNG thay vì vành tai. Thụt lại, bớt cao, và dùng hồng phai.
+    const inner=new THREE.Mesh(new THREE.ConeGeometry(0.070,0.140,11), matEar);
+    inner.position.set(0.276,0.286,s*0.206); aim(inner,-0.16,0.72,s*0.67); headG.add(inner);
     for(let i=0;i<3;i++){                        // chùm lông trong tai
       const tf=new THREE.Mesh(new THREE.ConeGeometry(0.015,0.085,5), matCream);
       tf.position.set(0.312,0.325,s*(0.20+i*0.028)); aim(tf,-0.1,0.82,s*0.58); headG.add(tf);
@@ -2308,10 +2319,36 @@ function buildVehicle(type){
   // Vỏ trắng: chỉ phần trên-sau (tránh che mặt)
   hel.add(new THREE.Mesh(new THREE.SphereGeometry(0.40,26,18,
         -Math.PI*0.50, Math.PI*1.0, 0, Math.PI*0.52), matWhite));
-  // Kính vàng: phần trước, phủ từ trán xuống cằm
-  const visor=new THREE.Mesh(new THREE.SphereGeometry(0.406,26,20,
-        Math.PI*0.50, Math.PI*1.0, 0, Math.PI*0.72), matGold);
+  // ── KÍNH ──
+  // TRƯỚC ĐÂY: vỏ cầu bán-trước phủ từ đỉnh xuống 0.72π (≈130°, tức quá cằm),
+  // vật liệu vàng `opacity 0.34`. Vì là VỎ KÍN, từ bên ngoài nhìn vào thấy cả
+  // mặt trước lẫn mặt sau của nó chồng lên nhau → độ mờ thực ≈0.56, và mặt mèo
+  // biến thành một vệt vàng mờ. Đây là lý do Mèo Vàng chụp ảnh ra như một quả
+  // cầu trắng: KHÔNG PHẢI vì thiếu mặt (mắt/mũi/mõm/ria/tai đều có), mà vì bị
+  // kính nuốt mất.
+  //
+  // Nay: kính chỉ một lớp FrontSide, rất mờ; vành vàng đứng viền quanh mặt là
+  // thứ đọc "đây là mũ phi hành". Mặt mèo phải là thứ đập vào mắt trước.
+  const visor=new THREE.Mesh(new THREE.SphereGeometry(0.418,26,20,
+        Math.PI*0.50, Math.PI*1.0, 0, Math.PI*0.62), matVisor);
+  visor.renderOrder = 4;                 // vẽ sau cùng, không cắt mặt
   hel.add(visor); vRefs.helmetVisor=visor;
+  // Vành vàng quanh chỗ mở mặt — đọc ra hình dáng mũ
+  // Vành mở mặt. Phiên bản đầu đặt ở x=0.152, bán kính 0.352 × cao 1.16 ⇒
+  // vòng tròn cắt ngang qua mõm, đọc như lồng hámster. Đẩy ra trước sát mặt
+  // kính và thu nhỏ lại: giờ nó là VIỀN quanh chỗ mở, không phải vòng qua mặt.
+  const faceRim=new THREE.Mesh(new THREE.TorusGeometry(0.318,0.017,8,30), matGold);
+  faceRim.rotation.y=Math.PI/2; faceRim.position.set(0.238,0.030,0);
+  faceRim.scale.set(1.0,1.20,1.0);
+  hel.add(faceRim);
+  // Vè ngang trên trán, đọc ra mặt kính
+  const browBar=new THREE.Mesh(new THREE.TorusGeometry(0.30,0.020,7,22,Math.PI*0.86), matGold);
+  browBar.rotation.y=Math.PI/2; browBar.position.set(0.196,0.196,0);
+  browBar.scale.set(1.0,0.72,1.0);
+  hel.add(browBar);
+  // Mấu giữa sống mũi
+  const crest=new THREE.Mesh(new THREE.BoxGeometry(0.22,0.036,0.030), matGold);
+  crest.position.set(0.12,0.372,0); hel.add(crest);
   // Vành cổ nằm THẤP (dưới cằm) để không cắt ngang mặt
   const neckRing=new THREE.Mesh(new THREE.TorusGeometry(0.355,0.030,8,28), matWhite);
   neckRing.rotation.x=Math.PI/2; neckRing.position.y=-0.285; hel.add(neckRing);
@@ -2606,6 +2643,7 @@ function updateRidingPose(now, dt, steerInput, speed, boosting){
 // ---------- Camera helpers ----------
 let camMode=1; // 0 first, 1 third, 2 orbit
 let camYaw=0.6, camPitch=0.28, camDist=10;
+let camLookY = 0;   // nâng tâm nhìn (m) — để chụp chân dung Mèo Vàng
 let isDragging=false, lastX=0, lastY=0;
 
 const _camTmp=new THREE.Vector3(), _camFwd=new THREE.Vector3(), _camLook=new THREE.Vector3();
@@ -2688,7 +2726,10 @@ function updateCamera(dt){
     const z = playerPos.z + Math.sin(camYaw)*Math.cos(camPitch)*r;
     camera.position.lerp(_camTmp.set(x,y,z), 0.12);
     keepCamAboveGround(0.8);
-    camera.lookAt(playerPos.x, py, playerPos.z);
+    // lookLook cao hơn gốc xe: Mèo Vàng ngồi TRÊN xe, nhìn thẳng vào gốc xe
+    // thì camera chỉ thấy khung xe chứ không thấy mặt mèo. 0 = mặc định.
+    const ly = py + camLookY;
+    camera.lookAt(playerPos.x, ly, playerPos.z);
     return;
   }
   if(camMode===0){
@@ -5225,6 +5266,15 @@ window.__yc={ THREE, scene, player, camera, renderer, BIOMES, POIS, heightAt, sa
       footCells:footCount(), footTotal:FOOT_N*FOOT_N,
       footPct:Math.round(footCount()/(FOOT_N*FOOT_N)*100),
       routeLen:route.length, footRadius:FOOT_RADIUS, mapOpen }; },
+  setCamLookY(v){ camLookY = +v||0; return camLookY; },
+  setCamMode(v){ camMode=+v||0; return camMode; },
+  setYaw(v){ playerYaw = +v||0; return playerYaw; },
+  playerYawNow:()=>playerYaw,
+  setCamPose(o){ if(typeof o.yaw==='number') camYaw=o.yaw;
+    if(typeof o.pitch==='number') camPitch=o.pitch;
+    if(typeof o.dist==='number') camDist=o.dist;
+    return { camYaw, camPitch, camDist }; },
+  THREE,
   rendererInfo(){ const i=renderer.info; return { textures:i.memory.textures, geometries:i.memory.geometries,
                  calls:i.render.calls, triangles:i.render.triangles, programs:i.programs?.length ?? null }; },
   env: () => envMeshes.map(e=>({ name:e.name, count:e.count })),
