@@ -1,7 +1,7 @@
 # ─────────────────────────────────────────────���───────────────────────────────
 # Yellow Cat Loves Mars — CI/CD cho GitHub Pages
 #
-#   push/PR trên `master`  →  job `verify`  : build + smoke test (không deploy)
+#   push/PR trên `master`  →  job `verify`  : build + smoke + ngân sách (không deploy)
 #   push trên `master`     →  job `deploy`  : build rồi phát hành lên Pages
 #   workflow_dispatch      →  deploy thủ công
 #
@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   verify:
-    name: Build + smoke test
+    name: Build + smoke test + ngân sách
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -76,6 +76,17 @@ jobs:
           TARGET=http://127.0.0.1:4173/ node tests/smoke-phase3.mjs
         env:
           TARGET: http://127.0.0.1:4173/
+
+      - name: Ngân sách hiệu năng
+        # Task 3.7. Đo draw call / tam giác / shader / texture / bộ nhớ ở 4 preset
+        # × 3 vị trí, so với trần đặt trong tests/perf-budget.mjs. Vượt → CI ĐỎ
+        # → deploy KHÔNG chạy (deploy needs: verify).
+        #
+        # KHÔNG kiểm thời gian khung hình ở đây: runner này dùng SwiftShader
+        # (dựng phần mềm), ngưỡng FPS trên đó là cảm giác an toàn giả. Số thật do
+        # người chơi đo trên máy thật — xem document/perf-budget.md.
+        run: |
+          TARGET=http://127.0.0.1:4173/ node tests/perf-budget.mjs
 
       - name: Tải dist làm artifact
         uses: actions/upload-artifact@v4

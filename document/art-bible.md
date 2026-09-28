@@ -786,3 +786,62 @@ chỉ **đọc** `cineFocus` và áp nó như trọng số thêm lên hướng n
 thêm 2.6s sau khi người chơi đã đóng, trông như lỗi.
 
 Có `prefers-reduced-motion`: tắt toàn bộ animation thẻ.
+
+## 22. Ngân sách hiệu năng (Task 3.7, 2026-09-27)
+
+Toàn bộ số liệu, trần và phương pháp nằm ở `document/perf-budget.md`. Ở đây chỉ
+ghi những điều quyết định nên thuộc về nguyên tắc.
+
+### 22.1 Rò bộ nhớ tìm ra nhờ có ngân sách
+
+Đo đường đi vòng khắp bản đồ cho thấy hai pha rất khác nhau:
+
+| hành động | geometry trước | geometry sau |
+|---|---|---|
+| đi 13 chặng khắp bản đồ | 341 | 495 — **có kiểm soát** |
+| đổi xe 6 lần | 495 | **1515** (+1021) |
+
+Terrain chunk tự giải phóng đúng. Xe thì không:
+`while(player.children.length) player.remove(...)` gỡ group khỏi scene nhưng
+`remove()` **không** giải phóng buffer GPU. Mỗi lần đổi xe vứt ~175 geometry đi
+vĩnh viễn.
+
+`disposeVehicle()` chỉ dispose geometry và clone của `collectDustTargets`
+(đánh dấu `userData.__dustClone`). **Không** đụng vật liệu trong cache
+`autoMat` — nó dùng chung với Mèo Vàng và đá landmark, dispose là hỏng cả.
+
+Đo lại: đổi xe 15 lần chỉ `+3` geometry.
+
+Đây chính là lý do Task 3.7 tồn tại. Rò bộ nhớ loại này **không bao giờ biểu
+hiện** cho tới khi chơi lâu: không đỏ, không đụng, game vẫn mượt, chỉ chậm dần
+sau mười phút.
+
+### 22.2 Trần phải hẹp, nhưng không hẹp tới mức che rò
+
+Trần `geometries` đã hạ 620 → 560 **sau khi** hiểu vì sao lần đo đầu nhảy tới
+683. Nếu giữ 620 và gọi đó là "dao động bình thường" thì ngân sách đã tự bảo vệ
+chính thứ nó sinh ra để bắt. Dự phòng hợp lý là 12–35% cho các hạng mục ổn
+định thật.
+
+### 22.3 Xe ăn một nửa draw call
+
+Ẩn xe rồi đo lại:
+
+| | có xe | ẩn xe | xe tốn |
+|---|---|---|---|
+| `bike` | 353 | 178 | **175** |
+| `rover` | 364 | 174 | **190** |
+
+Cả thế giới chỉ tốn ~175 draw call; xe một mình tốn gần bằng thế, vì mỗi bộ
+phận là một `Mesh` + geometry riêng (368 draw call tổng ở vị trí
+tệ nhất). Ứng viên hàng đầu cho Phase 4: `mergeGeometries` cho khung gắn cứng,
+giữ riêng bánh/đèn/bàn tay; `InstancedMesh` cho nhóm lặp.
+
+### 22.4 KHÔNG đặt ngưỡng FPS vào CI
+
+Runner GitHub dùng SwiftShader — dựng phần mềm. Ngưỡng thời gian khung hình trên
+đó là **cảm giác an toàn giả**. Số thật do người chơi đo trên máy thật: 144 FPS,
+ổn định trên 100, có HUD bật/tắt bằng `F`.
+
+Tương tự, chưa đặt ngân sách mobile: số liệu mobile chỉ có được khi đo trên
+thiết bị thật, và con số bịa ra thành cam kết hứa hụt.

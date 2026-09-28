@@ -191,7 +191,7 @@ Mỗi Phase có Definition of Done + Task nhỏ (2–5 phút/task, TDD khi có l
 **Files:** `app/main.js`, `assets/audio/` nếu cần
 **Nội dung:** Đến landmark: âm thanh + particle burst + camera focus + journal card animation. Mỗi 30–60s có moment.
 
-### Task 3.7 — Performance budget & profiling
+### Task 3.7 — Performance budget & profiling  ✅ 27/09/2026 (perf-budget.md, art-bible §22)
 **Files:** `tests/perf-budget.mjs`, `document/perf-budget.md`
 **Nội dung:** Budget: draw calls, triangles, texture memory, shader variants, frame time laptop/mobile. Tự động fail CI nếu vượt.
 

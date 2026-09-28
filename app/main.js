@@ -1924,6 +1924,7 @@ function collectDustTargets(root){
     const em = m.emissive;
     if (em && (em.r + em.g + em.b) > 0.02) return;
     const c = m.clone();
+    c.userData.__dustClone = true;   // clone riêng của xe -> phải dispose khi đổi xe
     o.material = c;
     _dustMats.push({ mat:c, base:c.color.clone(), baseR:c.roughness ?? 0.6,
                      baseC:c.clearcoat ?? 0 });
@@ -1947,7 +1948,32 @@ function updateDustOnCar(dt){
   }
 }
 
+/**
+ * Giải phóng tài nguyên của xe cũ TRƯỚC khi dựng xe mới.
+ *
+ * RÒ BỘ NHỚ (đo được): đi khắp bản đồ thì geometry dừng ổn ở 494 — có kiểm
+ * soát. Nhưng đổi xe 6 lần thì lên 1515, +1021, KHÔNG BAO GIỜ giảm.
+ * Nguyên nhân: buildVehicle() gỡ group cũ khỏi player bằng
+ * `while(player.children.length) player.remove(...)` — remove khỏi scene KHÔNG
+ * giải phóng buffer GPU. Mỗi lần đổi xe vứt ~175 geometry đi.
+ *
+ * CHỈ dispose geometry và các CLONE của collectDustTargets. Vật liệu gốc nằm
+ * trong cache `autoMat` dùng chung với Mèo Vàng và đá landmark — dispose nó
+ * là làm hỏng cả những thứ khác.
+ */
+function disposeVehicle(){
+  if (!player) return;
+  const clones = new Set();
+  player.traverse(o=>{
+    if (o.geometry) o.geometry.dispose();
+    const ms = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : [];
+    for (const m of ms) if (m && m.userData && m.userData.__dustClone) clones.add(m);
+  });
+  for (const m of clones) m.dispose();
+}
+
 function buildVehicle(type){
+  disposeVehicle();
   while(player.children.length) player.remove(player.children[0]);
   // KHÔNG gán lại vRefs: mọi ref đã push vào object cũ, gán lại sẽ làm rỗng
   // wheels/disc/... và mọi logic bánh/đuôi im lặng. Chỉ xoá nội dung mảng.
@@ -4644,6 +4670,67 @@ window.__yc={ THREE, scene, player, camera, renderer, BIOMES, POIS, heightAt, sa
   terrainMat(){ const t=terrain; return t ? { hasMap:!!t.material.map, hasNormal:!!t.material.normalMap,
                  hasRoughMap:!!t.material.roughnessMap, roughness:t.material.roughness,
                  nScale:[t.material.normalScale.x, t.material.normalScale.y] } : null; },
+  /**
+   * Ngân sách GPU (Task 3.7). renderer.info KHÔNG cho biết texture nặng bao
+   * nhiêu byte — nó chỉ đếm SỐ texture. Ở đây duyệt scene, gom texture theo
+   * uuid và tính đúng byte/kênh.
+   *
+   *   bytes = w·h·(mip ? 4/3 : 1)·channels,  channels = 4 (RGBA8) hoặc 8 (HalfFloat)
+   *
+   * Hệ số 4/3 là chuỗi mip đầy đủ: 1 + 1/4 + 1/16 + … = 4/3.
+   * Đây là con số xấp xỉ — GPU còn phải nhân bản sang layout khác, padding,
+   * và texture chưa tải xong vẫn được tính. Nhưng đủ để bắt được "thêm một
+   * texture 2K mà không ai nhớ" — thứ mà renderer.info nhìn thấy là "số texture
+   * tăng từ 40 lên 41".
+   */
+  gpuBudget(){
+    const seen = new Map();
+    const bump = (t)=>{
+      if (!t || seen.has(t.uuid)) return;
+      const img = t.image;
+      const w = img?.width  || 0, h = img?.height || 0;
+      if (!w || !h){ seen.set(t.uuid, { w:0, h:0, bytes:0, name:t.name||'' }); return; }
+      // RGBA = 4 byte/kênh; HalfFloat = 2 byte/kênh -> gấp đôi
+      const half = (t.type === THREE.HalfFloatType);
+      const mip  = t.generateMipmaps !== false;
+      const bytes = w*h*(half?8:4)*(mip?4/3:1);
+      seen.set(t.uuid, { w, h, bytes, half, name:t.name||'' });
+    };
+    scene.traverse(o=>{
+      const mats = o.material ? (Array.isArray(o.material)?o.material:[o.material]) : [];
+      for (const m of mats){
+        for (const k in m){ const v = m[k]; if (v && v.isTexture) bump(v); }
+        // bản đồ phụ trong shader (aoMap/normalMap đã nằm trong m, nhưng
+        // lightMap/shadow dùng tên riêng)
+        for (const k of ['lightMap','envMap','aoMap','bumpMap','displacementMap','specularMap']){
+          if (m[k] && m[k].isTexture) bump(m[k]);
+        }
+      }
+    });
+    let bytes = 0, n2k = 0, n4k = 0, n1k = 0, biggest = null, bigBytes = 0;
+    for (const t of seen.values()){
+      bytes += t.bytes;
+      if (t.w >= 2048) n2k++; else if (t.w >= 1024) n1k++;
+      if (t.bytes > bigBytes){ bigBytes = t.bytes; biggest = t; }
+    }
+    // instanced: draw call = 1 cho cả lũ, tam giác thì nhân với count
+    let instanced = 0, instTri = 0;
+    scene.traverse(o=>{ if (o.isInstancedMesh && o.visible){
+      instanced += o.count;
+      const g = o.geometry; const n = g?.index ? g.index.count : (g?.attributes.position?.count||0);
+      instTri += (n/3) * o.count;
+    }});
+    return {
+      textures: seen.size,
+      textureMB: +(bytes/1048576).toFixed(2),
+      n1024: n1k, n2048: n2k,
+      biggest: biggest ? `${biggest.name||'(không tên)'} ${biggest.w}×${biggest.h}` : null,
+      biggestMB: +(bigBytes/1048576).toFixed(2),
+      geometries: renderer.info.memory.geometries,
+      instancedCount: instanced,
+      instancedTriangles: Math.round(instTri),
+    };
+  },
   rendererInfo(){ const i=renderer.info; return { textures:i.memory.textures, geometries:i.memory.geometries,
                  calls:i.render.calls, triangles:i.render.triangles, programs:i.programs?.length ?? null }; },
   env: () => envMeshes.map(e=>({ name:e.name, count:e.count })),

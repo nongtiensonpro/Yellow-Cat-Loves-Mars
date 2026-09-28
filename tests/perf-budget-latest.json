@@ -1,0 +1,92 @@
+{
+  "budget": {
+    "calls": {
+      "max": 460,
+      "why": "draw call qua MỌI pass composer"
+    },
+    "triangles": {
+      "max": 135000,
+      "why": "tam giác/khung"
+    },
+    "programs": {
+      "max": 56,
+      "why": "biến thể shader (mỗi cái = một compile)"
+    },
+    "textures": {
+      "max": 80,
+      "why": "số texture GPU"
+    },
+    "textureMB": {
+      "max": 32,
+      "why": "bộ nhớ texture ước tính"
+    },
+    "geometries": {
+      "max": 560,
+      "why": "geometry đang còn trong bộ nhớ"
+    }
+  },
+  "measured": {
+    "low": {
+      "nm": "spawn     ",
+      "textures": 61,
+      "geometries": 346,
+      "calls": 346,
+      "triangles": 100705,
+      "programs": 39,
+      "textureMB": 22.71,
+      "n1024": 0,
+      "n2048": 0,
+      "biggest": "(không tên) 512×512",
+      "biggestMB": 1.33,
+      "instancedCount": 4575,
+      "instancedTriangles": 64550
+    },
+    "medium": {
+      "nm": "spawn     ",
+      "textures": 61,
+      "geometries": 488,
+      "calls": 352,
+      "triangles": 98457,
+      "programs": 40,
+      "textureMB": 22.71,
+      "n1024": 0,
+      "n2048": 0,
+      "biggest": "(không tên) 512×512",
+      "biggestMB": 1.33,
+      "instancedCount": 4575,
+      "instancedTriangles": 64550
+    },
+    "high": {
+      "nm": "spawn     ",
+      "textures": 61,
+      "geometries": 494,
+      "calls": 367,
+      "triangles": 98472,
+      "programs": 41,
+      "textureMB": 22.71,
+      "n1024": 0,
+      "n2048": 0,
+      "biggest": "(không tên) 512×512",
+      "biggestMB": 1.33,
+      "instancedCount": 4575,
+      "instancedTriangles": 64550
+    },
+    "cinematic": {
+      "nm": "spawn     ",
+      "textures": 61,
+      "geometries": 494,
+      "calls": 368,
+      "triangles": 98473,
+      "programs": 42,
+      "textureMB": 22.71,
+      "n1024": 0,
+      "n2048": 0,
+      "biggest": "(không tên) 512×512",
+      "biggestMB": 1.33,
+      "instancedCount": 4575,
+      "instancedTriangles": 64550
+    }
+  },
+  "errors": [],
+  "checkedAt": "2026-09-28T02:43:08.761Z"
+}
