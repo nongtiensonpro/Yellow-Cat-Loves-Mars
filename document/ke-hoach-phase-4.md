@@ -56,7 +56,7 @@ Không render lại mỗi khung — đó là toàn bộ ý nghĩa của việc c
 Nếu đo thấy `depthRT` làm giảm FPS quá 20% thì giữ tilt-shift và ghi rõ trong
 art-bible, không giả vờ đó là DOF.
 
-### 4.1c — Bản đồ: đồng mức, route, vùng đã khám phá
+### 4.1c — Bản đồ: đồng mức, route, vùng đã khám phá  ✅ (art-bible §24)
 
 - **Đường đồng mức**: vẽ đường đẳng cao trên `bigmap` mỗi 10 m, đậm mạch chính
   (100 m). Dùng marching squares trên lưới mẫu thưa, không quét 640×520 pixel.

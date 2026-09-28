@@ -2871,6 +2871,133 @@ function drawMini(){
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// BẢN ĐỒ: ĐƯỜNG ĐỒNG MỨC · ROUTE · VÙNG ĐÃ KHÁM PHÁ  (Task 4.1c)
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── VÙNG ĐÃ KHÁM PHÁ ───────────────────────────────────────────────────────
+// Lưới ô vuông, ô sáng lên khi người chơi vào bán kính khám phá. Dùng bitmask
+// số nguyên thay vì Set: 57×57 ô = 3249 bit = 406 byte, gọn hơn Set rất nhiều
+// và lưu vào localStorage gọn (chuỗi base36).
+const FOOT_CELL = 40, FOOT_RADIUS = 90;
+const FOOT_N = Math.ceil(TERRAIN_SIZE / FOOT_CELL);
+// Uint8Array, KHÔNG phải bitmask số nguyên.
+//
+// Đã thử bitmask và nó SAI: 35×35 = 1225 ô, mà toán tử `&`/`<<` của JS chỉ 32
+// bit. `1 << 100` rơi về `1 << 4` — đọc nhầm ô, và khi gán `|=` còn làm hỏng ô
+// khác nữa. Nhìn thì bản đồ vẫn "có vẻ đúng" chỉ vì lỗi đặt ảnh tối ở ngẫu
+// nhiên, nên rất dễ tưởng là xong. 1225 byte thì không đáng gì.
+const footSeen = new Uint8Array(FOOT_N*FOOT_N);
+(function restoreFoot(){
+  try{
+    const s = localStorage.getItem(STORAGE_KEY+'_foot');
+    if (s) for (let i=0;i<FOOT_N*FOOT_N && i<s.length;i++) footSeen[i] = s.charCodeAt(i)===49 ? 1 : 0;
+  }catch(e){}
+})();
+let footDirty = false;
+function footIdx(x,z){
+  const cx = Math.floor((x + TERRAIN_SIZE/2)/FOOT_CELL);
+  const cz = Math.floor((z + TERRAIN_SIZE/2)/FOOT_CELL);
+  if (cx<0||cz<0||cx>=FOOT_N||cz>=FOOT_N) return -1;
+  return cz*FOOT_N + cx;
+}
+function revealFootprint(x,z){
+  const r = Math.ceil(FOOT_RADIUS/FOOT_CELL);
+  const cx = Math.floor((x + TERRAIN_SIZE/2)/FOOT_CELL);
+  const cz = Math.floor((z + TERRAIN_SIZE/2)/FOOT_CELL);
+  let changed = false;
+  for (let dz=-r; dz<=r; dz++) for (let dx=-r; dx<=r; dx++){
+    const ax=cx+dx, az=cz+dz;
+    if (ax<0||az<0||ax>=FOOT_N||az>=FOOT_N) continue;
+    if (dx*dx+dz*dz > r*r) continue;              // hình tròn, không phải ô vuông
+    const i = az*FOOT_N + ax;
+    if (footSeen[i]) continue;
+    footSeen[i] = 1; changed = true;
+  }
+  if (changed) footDirty = true;
+  return changed;
+}
+/** Ghi xuống localStorage. Dùng chuỗi '0'/'1' — 1225 ký tự, gọn và chịu được. */
+function saveFoot(){
+  if (!footDirty) return;
+  footDirty = false;
+  try{
+    let s = '';
+    for (let i=0;i<footSeen.length;i++) s += footSeen[i] ? '1' : '0';
+    localStorage.setItem(STORAGE_KEY+'_foot', s);
+  }catch(e){}
+}
+function footCount(){ let n=0; for (let i=0;i<footSeen.length;i++) n += footSeen[i]; return n; }
+
+// ── ROUTE (breadcrumb) ─────────────────────────────────────────────────────
+const ROUTE_STEP = 12, ROUTE_MAX = 900;
+let route = (()=>{ try{ return JSON.parse(localStorage.getItem(STORAGE_KEY+'_route')||'[]'); }
+                   catch(e){ return []; } })();
+if (!Array.isArray(route)) route = [];
+let _routeLast = null;
+function pushRoute(x,z){
+  if (_routeLast){
+    const dx=x-_routeLast[0], dz=z-_routeLast[1];
+    if (dx*dx+dz*dz < ROUTE_STEP*ROUTE_STEP) return false;   // chưa đủ xa
+  }
+  route.push([+x.toFixed(1), +z.toFixed(1)]);
+  _routeLast = [x, z];
+  if (route.length > ROUTE_MAX) route.shift();
+  return true;
+}
+
+// ── ĐƯỜNG ĐỒNG MỨC (marching squares) ─────────────────────────────────────
+// Terrain là procedural với seed CỐ ĐỊNH — nó KHÔNG đổi trong phiên. Nên đo
+// đường đồng mức MỘT LẦN rồi cache, thay vì quét lại mỗi lần mở bản đồ.
+let contourCache = null;
+function buildContours(){
+  if (contourCache) return contourCache;
+  const N = 72, half = TERRAIN_SIZE/2, step = TERRAIN_SIZE/N;
+  // cao độ tại các đỉnh lưới
+  const H = new Float32Array((N+1)*(N+1));
+  let lo = Infinity, hi = -Infinity;
+  for (let j=0;j<=N;j++) for (let i=0;i<=N;i++){
+    const h = sampleHeight(-half + i*step, -half + j*step);
+    H[j*(N+1)+i] = h;
+    if (h<lo) lo=h; if (h>hi) hi=h;
+  }
+  // mức đồng mức: kẻ mỗi 12 m; mạch chính mỗi 60 m
+  const MINOR = 12, MAJOR = 60;
+  const start = Math.ceil(lo/MINOR)*MINOR;
+  const segs = [];
+  for (let level=start; level<=hi; level+=MINOR){
+    const major = (Math.abs(level % MAJOR) < 0.001);
+    for (let j=0;j<N;j++) for (let i=0;i<N;i++){
+      const x0=-half+i*step, z0=-half+j*step, x1=x0+step, z1=z0+step;
+      const a=H[j*(N+1)+i], b=H[j*(N+1)+i+1], c=H[(j+1)*(N+1)+i+1], d=H[(j+1)*(N+1)+i];
+      // 4 đỉnh theo thứ tự vòng: (x0,z0) (x1,z0) (x1,z1) (x0,z1)
+      const v=[a,b,c,d];
+      let cross=0, pts=[];
+      for (let e=0;e<4;e++){
+        const e2=(e+1)%4;
+        if ((v[e]<level) !== (v[e2]<level)){
+          const t = (level - v[e]) / (v[e2]-v[e]);
+          const ex=[x0,x1,x1,x0][e], ez=[z0,z0,z1,z1][e];
+          const ex2=[x0,x1,x1,x0][e2], ez2=[z0,z0,z1,z1][e2];
+          pts.push([ex+(ex2-ex)*t, ez+(ez2-ez)*t]);
+          cross++;
+        }
+      }
+      if (cross>=2){
+        // 4 điểm = trường hợp "bồn cầu": nối thành 2 đoạn, không nối chéo
+        if (cross===4){
+          segs.push({ax:pts[0][0],az:pts[0][1],bx:pts[1][0],bz:pts[1][1],m:major});
+          segs.push({ax:pts[2][0],az:pts[2][1],bx:pts[3][0],bz:pts[3][1],m:major});
+        } else {
+          segs.push({ax:pts[0][0],az:pts[0][1],bx:pts[1][0],bz:pts[1][1],m:major});
+        }
+      }
+    }
+  }
+  contourCache = { segs, lo, hi };
+  return contourCache;
+}
+
 function drawBigMap(){
   const w=bigmap.width, h=bigmap.height;
   bigCtx.clearRect(0,0,w,h);
@@ -2895,6 +3022,54 @@ function drawBigMap(){
       bigCtx.fillRect(x, z, step-1, step-1);
     }
   }
+  // ── ĐƯỜNG ĐỒNG MỨC ──
+  // Vẽ SAU tô bóng cao độ (đường cần nền tối để nổi) nhưng TRƯỚC fog
+  // (người chơi không nên thấy địa hình chưa tới).
+  const ct = buildContours();
+  bigCtx.lineCap='round';
+  for (const s of ct.segs){
+    bigCtx.strokeStyle = s.m ? 'rgba(255,214,150,0.60)' : 'rgba(255,255,255,0.20)';
+    bigCtx.lineWidth  = s.m ? 1.6 : 0.8;
+    bigCtx.beginPath(); bigCtx.moveTo(s.ax,s.az); bigCtx.lineTo(s.bx,s.bz); bigCtx.stroke();
+  }
+
+  // ── VÙNG ĐÃ KHÁM PHÁ (fog of war) ──
+  // Vẽ SAU đồng mức: vùng chưa khám phá phải che cả đường nữa.
+  //
+  // KHÔNG vẽ 1225 fillRect trực tiếp. Vẽ vào một canvas nhỏ đúng bằng số ô
+  // (35×35), làm mờ rồi nâng cỡ lên toàn bản đồ. Kết quả: mép mềm, đọc được là
+  // sương chứ không phải ô vuông, và chỉ tốn MỘT drawImage thay vì 1225 fillRect.
+  const half = TERRAIN_SIZE/2;
+  if (!fogCv){ fogCv = document.createElement('canvas'); fogCv.width = fogCv.height = FOOT_N; }
+  const fctx = fogCv.getContext('2d');
+  fctx.clearRect(0,0,FOOT_N,FOOT_N);
+  fctx.fillStyle = 'rgba(8,5,4,0.86)';
+  for (let cz=0; cz<FOOT_N; cz++) for (let cx=0; cx<FOOT_N; cx++)
+    if (!footSeen[cz*FOOT_N+cx]) fctx.fillRect(cx, cz, 1, 1);
+  try{ fctx.filter = 'blur(1.1px)'; fctx.filter = 'none'; }catch(e){}   // filter không hỗ trợ vẫn chạy
+  fctx.filter = 'blur(1.1px)';
+  fctx.drawImage(fogCv, 0, 0);            // vẽ lại chính nó qua bộ lọc làm mờ
+  fctx.filter = 'none';
+  bigCtx.imageSmoothingEnabled = true;
+  bigCtx.imageSmoothingQuality = 'high';
+  bigCtx.drawImage(fogCv, -half, -half, TERRAIN_SIZE, TERRAIN_SIZE);
+
+  // ── ROUTE (breadcrumb) ──
+  // Nét liền, mờ dần theo tuổi: càng xưa càng nhạt — đọc được hướng đã đi.
+  if (route.length >= 2){
+    bigCtx.lineCap='round'; bigCtx.lineJoin='round';
+    for (let i=1;i<route.length;i++){
+      const t = i/route.length;
+      bigCtx.strokeStyle = `rgba(255,204,51,${0.10 + t*0.60})`;
+      bigCtx.lineWidth  = 1.2 + t*1.8;
+      bigCtx.beginPath(); bigCtx.moveTo(route[i-1][0],route[i-1][1]);
+      bigCtx.lineTo(route[i][0],route[i][1]); bigCtx.stroke();
+    }
+    const last = route[route.length-1];
+    bigCtx.fillStyle='rgba(255,204,51,0.95)';
+    bigCtx.beginPath(); bigCtx.arc(last[0], last[1], 4.5, 0, Math.PI*2); bigCtx.fill();
+  }
+
   // biome labels
   for(const b of BIOMES){
     bigCtx.fillStyle='rgba(255,255,255,0.96)';
@@ -2929,9 +3104,17 @@ function drawBigMap(){
   bigCtx.strokeRect(tb.pos.x-24, tb.pos.z-24, 48,48); bigCtx.setLineDash([]);
   bigCtx.restore();
   // overlay info
-  bigCtx.fillStyle='rgba(0,0,0,0.45)'; bigCtx.fillRect(10,10,210,26);
-  bigCtx.fillStyle='rgba(255,255,255,0.9)'; bigCtx.font='10px JetBrains Mono'; bigCtx.textAlign='left';
-  bigCtx.fillText('Kéo để di chuyển · Cuộn để zoom', 16,26);
+  // Thanh tiến độ khám phá — người chơi cần thấy được "còn bao nhiêu"
+  const seen = footCount(), total = FOOT_N*FOOT_N;
+  const pct = Math.round(seen/total*100);
+  bigCtx.fillStyle='rgba(0,0,0,0.55)'; bigCtx.fillRect(10,10,232,42);
+  bigCtx.textAlign='left'; bigCtx.fillStyle='rgba(255,255,255,0.92)';
+  bigCtx.font='800 10px Space Grotesk';
+  bigCtx.fillText(`ĐÃ KHÁM PHÁ ${pct}%`, 16, 25);
+  bigCtx.fillStyle='rgba(255,255,255,0.16)'; bigCtx.fillRect(16,30,200,6);
+  bigCtx.fillStyle='#ffcc33'; bigCtx.fillRect(16,30,200*seen/total,6);
+  bigCtx.fillStyle='rgba(255,255,255,0.55)'; bigCtx.font='10px JetBrains Mono';
+  bigCtx.fillText(`${discovered.size}/${POIS.length} điểm khám phá · ${route.length} bước`, 16, 47);
 }
 
 // ---------- Overlays wiring ----------
@@ -3156,10 +3339,13 @@ document.getElementById('btn-pick-cancel').onclick=()=>{ overlayVehicle.classLis
 document.getElementById('btn-vehicle-close').onclick=()=> overlayVehicle.classList.add('hidden');
 document.querySelectorAll('.v-card').forEach(c=> c.addEventListener('click', ()=>{ document.querySelectorAll('.v-card').forEach(x=>x.classList.remove('active')); c.classList.add('active'); setVehicle(c.dataset.pick); }));
 
+let mapOpen = false;
 function toggleMap(force){
   const show = typeof force==='boolean' ? force : overlayMap.classList.contains('hidden');
   overlayMap.classList.toggle('hidden', !show);
+  mapOpen = show;
   if(show){ renderBiomeList(); drawBigMap(); updateJournal(); }
+  markMapDirty();
 }
 // ════════════════════════════════════════════════════════════════════════════
 // MÁY ẢNH ẢO — Task 4.1a
@@ -4181,6 +4367,17 @@ function frame(now){
   settleToGround();
   // Khí quyển theo biome (Task 1.6): set đích khi đổi vùng, lerp mượt mỗi khung.
   setBiomeAtmosphere(biomeAt(playerPos.x, playerPos.z).biome.id);
+  // ── Bản đồ: ghi breadcrumb + mở ô đã khám phá ──
+  // Rẻ: pushRoute tự từ chối nếu chưa đi đủ 12 m; revealFootprint trả false
+  // nếu không có ô nào mới. Chỉ vẽ lại bản đồ khi thực sự có gì đổi.
+  // KHÔNG nhốt sau `if (mapOpen)` — bản đồ thường đóng trong lúc lái, nhốt vậy
+  // là không bao giờ ghi được gì. Chi phí mỗi khung gần như bằng 0: pushRoute tự
+  // từ chối khi chưa đi đủ 12 m, revealFootprint trả false khi không ô mới.
+  if (pushRoute(playerPos.x, playerPos.z) || revealFootprint(playerPos.x, playerPos.z)){
+    if (mapOpen) drawBigMap();
+  }
+  if (++_footSaveTick > 240){ _footSaveTick = 0; saveFoot(); }   // ~4 s
+
   // ── DOF: dựng lại bộ đệm chiều sâu khi CẦN, không mỗi khung ──
   // Xe chạy xa quá 1.5 m tính từ lần dựng gần nhất thì bộ đệm đã lỗi thời.
   if (photoMode && photoPass && photoPass.enabled){
@@ -4741,6 +4938,9 @@ function refreshPhotoDepth(){
 
 // Cờ cần dựng lại depth. Bật khi: vào photo mode, đổi preset đồ họa,
 // hoặc xe đã chạy xa quá 1.5 m kể từ lần dựng gần nhất.
+let mapDirty = true, _footSaveTick = 0;
+let fogCv = null;   // canvas nhỏ làm lớp sương của bản đồ
+function markMapDirty(){ mapDirty = true; }
 let gradeVignetteBase = 0.42;   // chủ sở hữu: applyGraphicsPreset (chỉ gán khi KHÔNG ở photo mode)
 let photoDepthAge = 0, photoDepthDirty = false;
 const photoLastPos = new THREE.Vector3(1e9, 1e9, 1e9);
@@ -4999,6 +5199,12 @@ window.__yc={ THREE, scene, player, camera, renderer, BIOMES, POIS, heightAt, sa
     try{ renderer.readRenderTargetPixels(photoDepthRT, (photoDepthRT.width/2)|0,
       (photoDepthRT.height/2)|0, 1, 1, buf); }catch(e){ return 'read-fail:'+e.message; }
     return { w:photoDepthRT.width, h:photoDepthRT.height, mid:+(buf[0]||0).toFixed(1) }; },
+  mapInfo(){ const c = buildContours();
+    return { contourSegs:c.segs.length, majorSegs:c.segs.filter(s=>s.m).length,
+      hMin:+c.lo.toFixed(1), hMax:+c.hi.toFixed(1),
+      footCells:footCount(), footTotal:FOOT_N*FOOT_N,
+      footPct:Math.round(footCount()/(FOOT_N*FOOT_N)*100),
+      routeLen:route.length, footRadius:FOOT_RADIUS, mapOpen }; },
   rendererInfo(){ const i=renderer.info; return { textures:i.memory.textures, geometries:i.memory.geometries,
                  calls:i.render.calls, triangles:i.render.triangles, programs:i.programs?.length ?? null }; },
   env: () => envMeshes.map(e=>({ name:e.name, count:e.count })),

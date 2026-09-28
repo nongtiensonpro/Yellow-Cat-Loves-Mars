@@ -910,3 +910,69 @@ Ghi vậy trong tài liệu để không ai tưởng có bảng tra cứu màu 3
 `photoDepthRT` = `w·h·4` byte. Ở 1080p khoảng 3.5 MB; ở 4K khoảng 33 MB. Cấp
 phát một lần, giữ lại giữa các lần vào/ra photo mode để khỏi cấp phát lại.
 Không tính vào `gpuBudget()` vì đó là render target, không phải texture.
+
+## 24. Bản đồ: đồng mức, route, vùng đã khám phá (Task 4.1c, 27/09/2026)
+
+### 24.1 Đường đồng mức — marching squares, có cache
+
+Lưới 72×72 trên toàn bộ 1400 m, kẻ mỗi **12 m**, mạch chính mỗi **60 m** (dày và
+sáng hơn). Đo ra **3412 mạch**, trong đó **736 mạch chính**, cao độ −26.9 … +207.3 m.
+
+Trường hợp 4 điểm giao (bồn cầu) nối thành **hai** đoạn, không nối chéo — nối chéo
+tạo đường đồng mức giả băng ngang đỉnh.
+
+Terrain là procedural với seed **cố định**, không đổi trong phiên — nên đo **một
+lần** rồi cache `contourCache`. Quét lại mỗi lần mở bản đồ là 5329 lời gọi
+`sampleHeight` vô ích.
+
+### 24.2 Lỗi 32-bit — loại lỗi nguy hiểm nhất của tôi ở Phase này
+
+Bản đồ có 35×35 = **1225 ô**. Tôi lưu trạng thái bằng bitmask số nguyên: `footMask & (1<<bit)`.
+
+Toán tử `&` và `<<` của JS chỉ **32 bit**. `1 << 100` rơi về `1 << 4`.
+
+Hệ quả: mọi ô từ bit 32 trở đi đọc **sai ô**, và khi gán `|=` còn **làm hỏng ô khác**.
+
+Nguy hiểm ở chỗ nó **không trông sai**. Bản đồ vẫn có sương, vẫn có vùng sáng, vẫn
+chạy không lỗi. Chỉ là vùng tối đặt **ở ngẫu nhiên**. Đo mới lộ ra:
+
+| | `pctDark` | `pctMid` | `pctBright` |
+|---|---|---|---|
+| bitmask 32-bit | 40% | 43% | **17%** |
+| `Uint8Array` | **85%** | 14% | **0%** |
+
+Khi mới khám phá 2%, bản đồ đúng phải gần như toàn tối.
+
+Sửa: `Uint8Array(1225)` — 1225 byte, không đáng gì. Lưu xuống `localStorage` thành
+chuỗi `'0'/'1'`.
+
+Bài học chung cho cả Phase 3 lẫn Phase 4: **số đo và ảnh chụp bắt được thứ mắt
+thường bỏ sót.** Ở đây mắt thường sẽ nói "ổn, có fog mà", và nó đúng — có fog,
+chỉ là sai chỗ.
+
+### 24.3 Ghi mọi lúc, không nhốt sau `mapOpen`
+
+Bản đầu tôi viết `if (mapOpen) { pushRoute(); revealFootprint(); }` — tưởng để tiết
+kiệm. Nhưng bản đồ thì **đóng** suốt lúc lái, nên không bao giờ ghi được gì:
+`footCells` đứng ở 0 sau cả chặng lái.
+
+Sửa: ghi **luôn**. Chi phí mỗi khung gần như bằng 0 — `pushRoute` tự từ chối khi
+chưa đi đủ 12 m, `revealFootprint` trả `false` khi không có ô nào mới.
+
+### 24.4 Sương mềm, và một draw call thay vì 1225
+
+Không vẽ 1225 `fillRect`. Vẽ vào canvas nhỏ **đúng bằng số ô** (35×35), làm mờ
+`filter: blur(1.1px)`, rồi `drawImage` nâng cỡ toàn bản đồ.
+
+Kết quả mép mềm — đọc được là sương, không phải ô vuông. Trước đó mép blocky rõ
+rệt khi nhìn ảnh. Và tốn **một** `drawImage` thay vì 1225 `fillRect`.
+
+### 24.5 Route và tiến độ
+
+Breadcrumb ghi mỗi **12 m**, giữ tối đa 900 điểm, vẽ nét mờ dần theo tuổi (càng
+xưa càng nhạt) — đọc được hướng đã đi. Lưu `localStorage`.
+
+Góc trên trái có thanh tiến độ **ĐÃ KHÁM PHÁ %** kèm số điểm khám phá và số bước
+đã đi. Đo được: lái xong **263 ô (21%)**, giữ nguyên sau khi đóng/mở lại bản đồ.
+
+Độ dài route lưu mỗi 4 s (`saveFoot`), không ghi `localStorage` mỗi khung.
