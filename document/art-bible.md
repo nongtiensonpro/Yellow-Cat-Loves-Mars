@@ -845,3 +845,68 @@ Runner GitHub dùng SwiftShader — dựng phần mềm. Ngưỡng thời gian k
 
 Tương tự, chưa đặt ngân sách mobile: số liệu mobile chỉ có được khi đo trên
 thiết bị thật, và con số bịa ra thành cam kết hứa hụt.
+
+## 23. Photo mode như một máy ảnh thật (Task 4.1a+b, 27/09/2026)
+
+### 23.1 DOF THẬT, và vì sao bây giờ mới rẻ được
+
+Task 3.5 tôi đã **cố tình** dùng tilt-shift thay DOF, và ghi rõ lý do: `BokehPass`
+của three.js render lại toàn bộ cảnh **mỗi khung** chỉ để lấy depth. Gấp đôi chi
+phí vẽ.
+
+Giờ làm được vì một điều đặc biệt của photo mode: **camera đứng yên**. Nên cái giá
+đó trả được *một lần*:
+
+- `photoDepthRT` — render target `FloatType`/`RedFormat`, cỡ bằng drawing buffer
+- `refreshPhotoDepth()` dựng lại khi: vào photo mode · đổi preset · xe đã chạy
+  xa quá 1.5 m tính từ lần dựng gần nhất
+- **không** dựng mỗi khung. Đó là toàn bộ ý nghĩa của việc chỉ bật DOF ở đây.
+
+Tự viết shader thay vì `MeshDepthMaterial`: đó là depth packing vào RGBA rồi
+phải giải mã ở shader. Ta chỉ cần khoảng cách, nên ghi thẳng số float view-space
+vào một kênh. Rẻ hơn, và không có đoạn giải mã nào có thể sai.
+
+Độ mờ theo công thức quang học `CoC ∝ |1/z − 1/f|·(f/N)`, quy ra bán kính px.
+Kiểm chứng bằng mắt: **f/22 nét từ gần đến xa · f/1.4 lấy nét 90 m thì xe ở 10 m
+mờ rõ còn nền xa sắc** — đúng chiều.
+
+### 23.2 Thứ tự pass quyết định EV có đúng hay không
+
+`grade → haze → rays → photo → OutputPass`. Tất cả nằm **trước** `OutputPass`,
+tức là làm việc trên giá trị **tuyến tính (HDR)**, chưa tone-map.
+
+Nên `uExposure` nhân ở đây là **đúng chỗ**: `exp2(EV)` trên tuyến tính. Cộng
+sau tone-map là cái sai kinh điển — bị nén lại, EV+2 chỉ ra một chút sáng.
+
+### 23.3 Hai chủ sở hữu tôi phải sửa
+
+**(1) FOV.** `updateCameraFeel()` gán `camera.fov` theo tốc độ **mỗi khung**
+(Task 3.5). Nó giữ tiêu cự về 37.8° trong khoảng một khung rồi kéo về 68° —
+thanh trượt "tiêu cự" trở nên vô dụng. Sửa: `if (!photoMode)` quanh khối gán đó.
+
+Rời photo mode phải trả FOV về ngay, không chờ khung sau — nếu không người chơi
+thấy cảnh vòng rộng đột ngột sau khi thoát.
+
+**(2) Vignette.** Có hai cái: của `GradeShader` (theo preset) và của photo pass
+(theo slider). Chồng nhau thì slider điều khiển *một* trong hai — hiển thị sai so
+với thực tế. Sửa: ở photo mode tắt vignette của grade, slider là chủ duy nhất.
+
+### 23.4 Một đối tượng, một đường gán
+
+`PHOTO` giữ toàn bộ thiết lập. **Mọi** thay đổi đi qua `applyPhoto()` — kể cả nút
+🎯 Nét. Không chỗ nào gán thẳng vào uniform. Nhờ vậy số trên thanh trượt không
+bao giờ lệch với giá trị thực sự dùng.
+
+Lưu `localStorage` — chỉnh một lần là giữ.
+
+### 23.5 Bốn kiểu màu
+
+`Sao Hỏa · Hoàng hôn · Chân không · Tương phản` — mỗi kiểu chỉ là bộ số cho
+`GradeShader` (tương phản, bão hoà, nhiệt sáng/lạnh), **không phải LUT 3D thật**.
+Ghi vậy trong tài liệu để không ai tưởng có bảng tra cứu màu 3D.
+
+### 23.6 Bộ nhớ
+
+`photoDepthRT` = `w·h·4` byte. Ở 1080p khoảng 3.5 MB; ở 4K khoảng 33 MB. Cấp
+phát một lần, giữ lại giữa các lần vào/ra photo mode để khỏi cấp phát lại.
+Không tính vào `gpuBudget()` vì đó là render target, không phải texture.

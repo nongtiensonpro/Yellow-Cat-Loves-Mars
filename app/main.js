@@ -148,7 +148,7 @@ let gfxName = (() => {
 // PHẢI khai báo TRƯỚC applyGraphicsPreset(): hàm đó được gọi lúc khởi tạo và gọi
 // applyPostFX(), nếu khai báo sau sẽ TDZ -> ReferenceError lúc boot. Đã dính lỗi
 // này một lần; giữ nguyên vị trí này.
-let composer = null, renderPass = null, bloomPass = null, fxaaPass = null, gradePass = null, focusPass = null;
+let composer = null, renderPass = null, bloomPass = null, fxaaPass = null, gradePass = null, photoPass = null;
 let postEnabled = false;
 let hazePass = null, raysPass = null;
 
@@ -2644,11 +2644,16 @@ let _bumpForCam = 0;   // xung ổ gi, Task 3.4 ghi; camera chỉ ĐỌC
  */
 function updateCameraFeel(dt, speedFrac, boosting){
   // 1) FOV động. Nội suy mũ để không giật khi đổi trạng thái boost.
-  const wantFov = CAM_BASE_FOV + speedFrac*CAM_FOV_SPEED + (boosting ? CAM_FOV_BOOST : 0);
-  _fovNow += (wantFov - _fovNow) * (1 - Math.exp(-dt/0.30));
-  if (Math.abs(camera.fov - _fovNow) > 0.01){
-    camera.fov = _fovNow;
-    camera.updateProjectionMatrix();
+  // FOV ở photo mode do TIÊU CỰ quyết định (applyPhoto), KHÔNG phải tốc độ.
+  // Nếu ghi ở đây thì mỗi khung lại kéo FOV về giá trị tốc độ và thanh trượt
+  // "tiêu cự" trở nên vô dụng — đúng loại lỗi hai chủ sở hữu từng gặp.
+  if (!photoMode){
+    const wantFov = CAM_BASE_FOV + speedFrac*CAM_FOV_SPEED + (boosting ? CAM_FOV_BOOST : 0);
+    _fovNow += (wantFov - _fovNow) * (1 - Math.exp(-dt/0.30));
+    if (Math.abs(camera.fov - _fovNow) > 0.01){
+      camera.fov = _fovNow;
+      camera.updateProjectionMatrix();
+    }
   }
   // 2) Trễ hướng nhìn: nội suy về yaw của xe. Rẽ thì khung hình quay sau một nhịp
   //    rồi mới bám — đây là thứ cho cảm giác "xe có khối lượng". Offset cũng phải
@@ -3156,6 +3161,71 @@ function toggleMap(force){
   overlayMap.classList.toggle('hidden', !show);
   if(show){ renderBiomeList(); drawBigMap(); updateJournal(); }
 }
+// ════════════════════════════════════════════════════════════════════════════
+// MÁY ẢNH ẢO — Task 4.1a
+//
+// Một đối tượng duy nhất giữ toàn bộ thiết lập chụp. KHÔNG gán thẳng vào uniform
+// từ nhiều chỗ: tất cả đi qua applyPhoto(), để "giá trị đang hiển thị trên
+// thanh trượt" và "giá trị thực sự dùng" không thể lệch nhau.
+// ════════════════════════════════════════════════════════════════════════════
+const PHOTO_DEFAULT = { ev:0, focal:35, fstop:4.0, focus:14, vignette:0.35, look:'mars' };
+const PHOTO = Object.assign({}, PHOTO_DEFAULT,
+  JSON.parse(localStorage.getItem(STORAGE_KEY+'_photo') || '{}'));
+
+/** 4 kiểu màu. Mỗi kiểu chỉ là bộ số cho GradeShader — không phải LUT 3D thật. */
+const LOOKS = {
+  mars:  { name:'Sao Hỏa',  contrast:1.09, saturation:1.12, warm:0.10, cool:0.06 },
+  dusk:  { name:'Hoàng hôn',contrast:1.16, saturation:1.26, warm:0.24, cool:0.02 },
+  void:  { name:'Chân không',contrast:1.22, saturation:0.62, warm:0.02, cool:0.16 },
+  bleach:{ name:'Tương phản',contrast:1.38,saturation:0.88, warm:0.06, cool:0.10 },
+};
+
+/**
+ * Tiêu cự (mm) → FOV. Dùng cảm ứng 24 mm ngang, khớp cảm ứng full-frame:
+ *   fov = 2·atan(24 / (2·f))
+ * 35 mm → 37.8°  ·  14 mm → 81.5°  ·  200 mm → 6.9°
+ * Kẹp 12°–105°: dưới 6.9° lập phương vị phép chiếu sẽ rung.
+ */
+function focalToFov(mm){
+  const f = Math.max(1, mm);
+  return THREE.MathUtils.clamp(2*Math.atan(24/(2*f)) * 180/Math.PI, 12, 105);
+}
+
+/** Đẩy toàn bộ thiết lập xuống shader + camera. Nơi DUY NHẤT được gán. */
+function applyPhoto(){
+  const look = LOOKS[PHOTO.look] || LOOKS.mars;
+  if (photoPass){
+    photoPass.uniforms.uExposure.value = PHOTO.ev;
+    photoPass.uniforms.uFocus.value    = PHOTO.focus;
+    photoPass.uniforms.uAperture.value = PHOTO.fstop;
+    photoPass.uniforms.uVignette.value = PHOTO.vignette;
+    photoPass.uniforms.uMaxBlur.value  = 1.0;
+    photoPass.uniforms.uTaps.value    = (gfxName === 'cinematic') ? 1 : 0;
+  }
+  if (gradePass && gradePass.uniforms){
+    // Ở photo mode: vignette của grade tắt hẳn, slider của người dùng là chủ duy nhất
+    gradePass.uniforms.uVignette.value = photoMode ? 0 : gradeVignetteBase;
+    gradePass.uniforms.uContrast.value   = look.contrast;
+    gradePass.uniforms.uSaturation.value = look.saturation;
+    gradePass.uniforms.uWarm.value       = look.warm;
+    gradePass.uniforms.uCool.value       = look.cool;
+  }
+  // Tiêu cự chỉ có nghĩa ở photo mode — ngoài đời FOV do Tốc độ (Task 3.5) quản lý
+  if (photoMode) camera.fov = focalToFov(PHOTO.focal);
+  camera.updateProjectionMatrix();
+  savePhoto();
+  syncPhotoUI();
+}
+function savePhoto(){
+  try{ localStorage.setItem(STORAGE_KEY+'_photo', JSON.stringify(PHOTO)); }catch(e){}
+}
+
+/** Khoảng cách lấy nét mặc định = tới tâm xe. Đủ gần để DOF có ý nghĩa. */
+function autoFocus(){
+  PHOTO.focus = Math.max(2, camera.position.distanceTo(playerPos));
+  applyPhoto();          // KHÔNG gán uFocus trực tiếp — applyPhoto là chủ sở hữu
+}
+
 function togglePhoto(force){
   const show = typeof force==='boolean' ? force : !photoMode;
   photoMode=show;
@@ -3164,11 +3234,63 @@ function togglePhoto(force){
   // Focus/tilt-shift CHỈ có ý nghĩa khi đứng yên chụp ảnh. Bật ở ngoài photo mode
   // thì cả lúc lái cũng mờ viền — tốn 9 mẫu/pixel mà không ai nhìn thấy tác dụng.
   // Chỗ bật/tắt DUY NHẤT: applyPostFX cũng không đụng vào biến này.
-  if(focusPass) focusPass.enabled = photoMode;
+  if(photoPass){
+    photoPass.enabled = photoMode;
+    if (photoMode){ applyPhoto(); autoFocus(); markPhotoDepth(); }
+    else {
+      // Rời photo mode: trả FOV về giá trị tốc độ ngay. Nếu không, camera kẹt ở
+      // tiêu cự hẹp (14mm → 81°) cho tới khung sau — người chơi thấy cảnh bị
+      // vòng rộng đột ngột.
+      _fovNow = camera.fov;
+      applyPhoto();
+    }
+  }
 }
 function toggleHelp(){
   showToast('🐱','Mèo Vàng mách nhỏ','WASD để đi, Shift để tăng tốc, C đổi camera, M mở bản đồ, P chụp ảnh, L đổi giờ. Trên điện thoại dùng joystick góc trái và vuốt để xoay camera nhé!');
 }
+
+// ══ Nối bảng điều khiển máy ảnh ══
+// Mọi thay đổi đều đi qua applyPhoto() — không chỉ thẳng vào uniform. Nhờ vậy
+// thanh trượt KHÔNG BAO GIỜ hiển thị giá trị khác với giá trị đang dùng thật.
+function syncPhotoUI(){
+  const set=(id,v)=>{ const e=document.getElementById(id); if(e) e.value=v; };
+  set('ps-ev',PHOTO.ev); set('ps-focal',PHOTO.focal); set('ps-fstop',PHOTO.fstop);
+  set('ps-focus',PHOTO.focus); set('ps-vig',PHOTO.vignette);
+  const txt=(id,s)=>{ const e=document.getElementById(id); if(e) e.textContent=s; };
+  txt('pv-ev',    (PHOTO.ev>0?'+':'')+PHOTO.ev.toFixed(1)+' EV');
+  txt('pv-focal', Math.round(PHOTO.focal)+'mm · '+focalToFov(PHOTO.focal).toFixed(0)+'°');
+  txt('pv-fstop', 'f/'+PHOTO.fstop.toFixed(1));
+  txt('pv-focus', PHOTO.focus.toFixed(1)+'m');
+  txt('pv-vig',   Math.round(PHOTO.vignette*100)+'%');
+  // tiêu cự hẹp lên thì DOF phải đậm hơn để nhìn ra; nới báo cho người dùng
+  const fEl=document.getElementById('ps-focus');
+  if (fEl) fEl.style.accentColor = (PHOTO.focal >= 85) ? '#e8b03a' : '';
+}
+
+(function initPhotoUI(){
+  const looks = document.getElementById('photo-looks');
+  if (looks){
+    for (const [k,v] of Object.entries(LOOKS)){
+      const b = document.createElement('button');
+      b.textContent = v.name; b.dataset.look = k;
+      b.setAttribute('aria-pressed', String(PHOTO.look===k));
+      b.onclick = ()=>{ PHOTO.look=k; applyPhoto();
+        looks.querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed', String(x.dataset.look===k))); };
+      looks.appendChild(b);
+    }
+  }
+  const bind=(id,key,after)=>{
+    const e=document.getElementById(id); if(!e) return;
+    e.addEventListener('input',()=>{ PHOTO[key]=parseFloat(e.value); applyPhoto(); if(after) after(); });
+  };
+  bind('ps-ev','ev'); bind('ps-focal','focal',markPhotoDepth);
+  bind('ps-fstop','fstop'); bind('ps-focus','focus'); bind('ps-vig','vignette');
+  const af=document.getElementById('btn-autofocus'); if(af) af.onclick=autoFocus;
+  const rs=document.getElementById('btn-photo-reset');
+  if(rs) rs.onclick=()=>{ Object.assign(PHOTO, PHOTO_DEFAULT); applyPhoto(); markPhotoDepth(); };
+  syncPhotoUI();
+})();
 
 document.getElementById('btn-map').onclick=()=> toggleMap();
 document.getElementById('btn-map-close').onclick=()=> toggleMap(false);
@@ -4059,6 +4181,13 @@ function frame(now){
   settleToGround();
   // Khí quyển theo biome (Task 1.6): set đích khi đổi vùng, lerp mượt mỗi khung.
   setBiomeAtmosphere(biomeAt(playerPos.x, playerPos.z).biome.id);
+  // ── DOF: dựng lại bộ đệm chiều sâu khi CẦN, không mỗi khung ──
+  // Xe chạy xa quá 1.5 m tính từ lần dựng gần nhất thì bộ đệm đã lỗi thời.
+  if (photoMode && photoPass && photoPass.enabled){
+    photoDepthAge += dt;
+    const d = photoDepthDirty || (photoDepthAge > 0.4 && (photoLastPos.distanceToSquared(playerPos) > 2.25));
+    if (d){ photoLastPos.copy(playerPos); photoDepthDirty = false; refreshPhotoDepth(); }
+  }
   updateAtmosphere(dt);
   updateShadowFollow();
   updateContactShadows();
@@ -4290,33 +4419,86 @@ loadText.textContent='Đang dựng đồng bằng Arcadia và đánh thức Mèo
 // ảnh tilt-shift trên máy ảnh film, hợp với "chụp kỷ niệm" hơn là DOF nhân vật.
 // Vẫn ghi "focus" trong UI để không gọi nhầm tên.
 // ════════════════════════════════════════════════════════════════════════════
-const FocusShader = {
-  uniforms: { tDiffuse:{value:null}, uAmount:{value:0.0}, uFocus:{value:0.52}, uSoft:{value:0.42} },
+/**
+ * PASS PHOTO — Task 4.1b: DOF THẬT theo chiều sâu + phơi sáng + vignette.
+ *
+ * Task 3.5 tôi đã CỐ TÌNH dùng tilt-shift thay DOF, vì `BokehPass` của three.js
+ * render lại cảnh mỗi khung để lấy depth. Ở photo mode camera ĐỨNG YÊN, nên cái
+ * giá đó trả được MỘT LẦN: bộ đệm depth (`photoDepthRT`) được dựng lại khi
+ * vào photo mode hoặc khi cảnh thay đổi, không phải mỗi khung.
+ *
+ * Tính độ mờ (circle of confusion) chuẩn quang học:
+ *
+ *     CoC  ∝  |1/z − 1/f| · (f / N)        f = tiêu cự, N = f-number
+ *
+ * Ở đây quy ra thành hệ số thực dụng — không cần đúng mm tuyệt đối, cần là
+ * f/1.4 phải mờ mạnh hơn f/22 một cách đúng chiều và dễ kiểm chứng bằng mắt.
+ *
+ * LƯU Ý VỀ THỨ TỰ: grade/haze/rays/photo đều nằm TRƯỚC OutputPass, tức là đang
+ * làm việc trên giá trị TUYẾN TÍNH (HDR), chưa tone-map. Nhân `uExposure` ở
+ * đây là đúng chỗ — cộng sai chỗ (sau tone-map) sẽ bị nén lại và EV+2 chỉ ra
+ * một chút sáng, đúng cái sai kinh điển.
+ */
+const PhotoShader = {
+  uniforms: {
+    tDiffuse:  { value: null },
+    tDepth:    { value: null },
+    uFocus:    { value: 14.0 },    // mét, mặt phẳng lấy nét
+    uAperture: { value: 2.8 },     // f-number nhỏ = mở = mờ mạnh
+    uMaxBlur:  { value: 1.0 },     // 0..1, mức mờ tối đa
+    uExposure: { value: 0.0 },     // EV
+    uVignette: { value: 0.35 },
+    uTaps:     { value: 0 },       // 0 = vài mẫu, 1 = nhiều mẫu (cinematic)
+    uTexel:    { value: new THREE.Vector2(1/1280, 1/720) },
+  },
   vertexShader: `
     varying vec2 vUv;
     void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
   fragmentShader: `
-    uniform sampler2D tDiffuse;
-    uniform float uAmount, uFocus, uSoft;
+    uniform sampler2D tDiffuse, tDepth;
+    uniform float uFocus, uAperture, uMaxBlur, uExposure, uVignette, uTaps;
+    uniform vec2 uTexel;
     varying vec2 vUv;
+
     void main(){
-      if(uAmount < 0.002){ gl_FragColor = texture2D(tDiffuse, vUv); return; }
-      // khoảng cách chuẩn hoá tới vùng tiêu cư
-      float d = abs(vUv.y - uFocus) / max(uSoft, 0.001);
-      float k = clamp(d*d*0.85, 0.0, 1.0) * uAmount;
-      if(k < 0.004){ gl_FragColor = texture2D(tDiffuse, vUv); return; }
-      // 9 mẫu theo hình thoi: 4 góc + 4 cạnh + 1 giữa
-      vec2 px = vec2(k) * 0.0055;
-      vec3 c = texture2D(tDiffuse, vUv).rgb * 0.20;
-      c += texture2D(tDiffuse, vUv + vec2( px.x, 0.0)).rgb * 0.10;
-      c += texture2D(tDiffuse, vUv + vec2(-px.x, 0.0)).rgb * 0.10;
-      c += texture2D(tDiffuse, vUv + vec2(0.0,  px.y)).rgb * 0.10;
-      c += texture2D(tDiffuse, vUv + vec2(0.0, -px.y)).rgb * 0.10;
-      c += texture2D(tDiffuse, vUv + vec2( px.x*0.7,  px.y*0.7)).rgb * 0.08;
-      c += texture2D(tDiffuse, vUv + vec2(-px.x*0.7,  px.y*0.7)).rgb * 0.08;
-      c += texture2D(tDiffuse, vUv + vec2( px.x*0.7, -px.y*0.7)).rgb * 0.07;
-      c += texture2D(tDiffuse, vUv + vec2(-px.x*0.7, -px.y*0.7)).rgb * 0.07;
-      gl_FragColor = vec4(c, 1.0);
+      // ── phơi sáng: chất phóng quang học, chỉ đổi độ sáng KHÔNG đổi màu ──
+      vec3 col = texture2D(tDiffuse, vUv).rgb * exp2(uExposure);
+
+      // ── chiều sâu: tDepth lưu sẵn khoảng cách view-space (đơn vị mét) ──
+      float z = texture2D(tDepth, vUv).r;
+      if (uMaxBlur > 0.002 && z > 0.0){
+        // CoC tỉ lệ nghịch với khoảng cách: vật xa hơn điểm lấy nét mờ nhanh hơn
+        float coc = abs(1.0/max(z,0.05) - 1.0/max(uFocus,0.05));
+        coc *= uAperture * uFocus * 0.06;          // quy đổi ra bán kính px
+        float k = clamp(coc, 0.0, 1.0) * uMaxBlur;
+        if (k > 0.004){
+          float r = k * 0.022;                     // px, ở 1080p
+          // Vòng tròn 12 mẫu + 6 mẫu chéo, tổng 19 — đủ tròn mà không tốn như 32
+          vec3 acc = col; float wsum = 1.0;
+          for (int i = 0; i < 12; i++){
+            float a = float(i) * 0.5235988;        // 2π/12
+            float rr = (i < 6) ? r : r * 0.55;     // vòng ngoài nhạt hơn -> bokeh mềm
+            acc += texture2D(tDiffuse, vUv + vec2(cos(a), sin(a)) * rr * uTexel * 64.0).rgb;
+            wsum += 1.0;
+          }
+          if (uTaps > 0.5){
+            for (int i = 0; i < 6; i++){
+              float a = float(i) * 1.0471976;      // 2π/6
+              acc += texture2D(tDiffuse, vUv + vec2(cos(a), sin(a)) * r * 0.72 * uTexel * 64.0).rgb;
+              wsum += 1.0;
+            }
+          }
+          col = mix(col, acc / wsum, clamp(k * 1.4, 0.0, 1.0));
+        }
+      }
+
+      // ── vignette: tối bốn góc, mềm, không mép ──
+      if (uVignette > 0.002){
+        vec2 d = vUv - 0.5;
+        float v = 1.0 - dot(d, d) * uVignette * 2.6;
+        col *= clamp(v, 0.0, 1.0);
+      }
+      gl_FragColor = vec4(col, 1.0);
     }`,
 };
 
@@ -4481,8 +4663,8 @@ function initPostFX(){
   fxaaPass = new ShaderPass(FXAAShader);
   composer.addPass(fxaaPass);
   gradePass = new ShaderPass(GradeShader);
-  focusPass = new ShaderPass(FocusShader);
-  focusPass.enabled = false;   // chỉ bật ở photo mode
+  photoPass = new ShaderPass(PhotoShader);
+  photoPass.enabled = false;   // chỉ bật ở photo mode
   composer.addPass(gradePass);
   // Task 3.3. Thứ tự: grade -> haze -> rays -> output. Haze và rays cộng vào
   // ảnh ĐÃ tone-map, nên đặt sau grade để chúng không bị grade nén lại.
@@ -4491,9 +4673,78 @@ function initPostFX(){
   raysPass = new ShaderPass(GodRaysShader);
   raysPass.uniforms.uSunUV.value = new THREE.Vector2(0.5, 0.5);
   composer.addPass(raysPass);
-  composer.addPass(focusPass);
+  composer.addPass(photoPass);
   composer.addPass(new OutputPass());
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// BỘ ĐỆM CHIỀU SÂU CHO DOF (Task 4.1b)
+//
+// Vì sao tự viết thay vì dùng MeshDepthMaterial: đó là DEPTH PACKING vào RGBA
+// rồi phải giải mã lại ở shader. Ta chỉ cần KHOẢNG CÁCH, nên ghi thẳng số
+// float (view-space, đơn vị mét) vào một kênh. Rẻ hơn, và không có đoạn giải mã
+// nào có thể sai.
+//
+// Vì sao có thể render một lần rồi dùng lại: photo mode camera đứng yên.
+// Đây là toàn bộ ý nghĩa của việc chỉ bật DOF ở đây — ở ngoài, mỗi khung phải
+// render thêm một lượt cảnh, đắt gấp đôi.
+// ════════════════════════════════════════════════════════════════════════════
+let photoDepthRT = null;
+const photoDepthMat = new THREE.ShaderMaterial({
+  uniforms: {},
+  vertexShader: `
+    varying float vD;
+    void main(){
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      vD = -mv.z;                       // khoảng cách tới camera, dương
+      gl_Position = projectionMatrix * mv;
+      gl_PointSize = 2.0;               // Points cũng đi qua đây
+    }`,
+  fragmentShader: `
+    varying float vD;
+    void main(){ gl_FragColor = vec4(vD, 0.0, 0.0, 1.0); }`,
+  side: THREE.DoubleSide,              // vật mảnh (thân, tay) vẫn ghi depth
+});
+
+/**
+ * Dựng lại bộ đệm chiều sâu. Gọi khi: vào photo mode, đổi preset, hoặc cảnh
+ * thay đổi đủ nhiều. KHÔNG gọi mỗi khung.
+ */
+function refreshPhotoDepth(){
+  if (!photoPass || !renderer) return;
+  if (!photoDepthRT){
+    const s = renderer.getDrawingBufferSize(new THREE.Vector2());
+    photoDepthRT = new THREE.WebGLRenderTarget(s.x, s.y, {
+      type: THREE.FloatType, format: THREE.RedFormat,
+      minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+      depthBuffer: true, stencilBuffer: false,
+    });
+    photoPass.uniforms.tDepth.value = photoDepthRT.texture;
+  }
+  const s = renderer.getDrawingBufferSize(new THREE.Vector2());
+  if (photoDepthRT.width !== s.x || photoDepthRT.height !== s.y) photoDepthRT.setSize(s.x, s.y);
+  photoPass.uniforms.uTexel.value.set(1/s.x, 1/s.y);
+
+  const keepFog = scene.fog, keepBg = scene.background;
+  const prevOverride = scene.overrideMaterial, prevTarget = renderer.getRenderTarget();
+  scene.fog = null;                       // sương mù làm sai chiều sâu
+  scene.background = null;                // nền không ghi depth -> tự động z=0 = "vô hạn xa"
+  scene.overrideMaterial = photoDepthMat;
+  renderer.setRenderTarget(photoDepthRT);
+  renderer.clear();
+  renderer.render(scene, camera);
+  scene.overrideMaterial = prevOverride;
+  scene.fog = keepFog; scene.background = keepBg;
+  renderer.setRenderTarget(prevTarget);
+  photoDepthAge = 0;
+}
+
+// Cờ cần dựng lại depth. Bật khi: vào photo mode, đổi preset đồ họa,
+// hoặc xe đã chạy xa quá 1.5 m kể từ lần dựng gần nhất.
+let gradeVignetteBase = 0.42;   // chủ sở hữu: applyGraphicsPreset (chỉ gán khi KHÔNG ở photo mode)
+let photoDepthAge = 0, photoDepthDirty = false;
+const photoLastPos = new THREE.Vector3(1e9, 1e9, 1e9);
+function markPhotoDepth(){ photoDepthDirty = true; }
 
 /** Bật/tắt từng pass theo preset. low -> không post gì, render thẳng. */
 // ── Task 3.3: cấp cường độ cho haze + rays, và vị trí mặt trời trên màn hình ──
@@ -4531,7 +4782,11 @@ function applyPostFX(gfxName){
   initPostFX();
   gradePass.enabled = true;
   gradePass.uniforms.uGrain.value = level >= 3 ? 0.038 : 0.026;
-  gradePass.uniforms.uVignette.value = level >= 3 ? 0.50 : 0.40;
+  // Chỉ LƯU giá trị nền. applyPhoto() là nơi gán thật — nếu preset gán thẳng
+  // thì ở photo mode sẽ có HAI vignette chồng lên nhau và thanh trượt điều
+  // khiển chỉ được một, tức là hiển thị sai so với thực tế.
+  gradeVignetteBase = level >= 3 ? 0.50 : 0.40;
+  if (gradePass && gradePass.uniforms) gradePass.uniforms.uVignette.value = gradeVignetteBase;
   fxaaPass.enabled = level >= 2;
   bloomPass.enabled  = level >= 2;
   bloomPass.strength = level >= 3 ? 0.72 : 0.48;
@@ -4625,7 +4880,7 @@ window.__yc={ THREE, scene, player, camera, renderer, BIOMES, POIS, heightAt, sa
   // đọc __yc.renderer.info là undefined. Chỉ thêm tên chưa có.
   composer:()=>composer, postFXOn:()=>postEnabled, HF:()=>HF,
   sunScreen:()=>_sunScreen,
-  camMode:()=>camMode, focusOn:()=>!!(focusPass&&focusPass.enabled),
+  camMode:()=>camMode, focusOn:()=>!!(photoPass&&photoPass.enabled),
   discoveredCount:()=>discovered.size,
   closeDiscovery:(m)=>closeDiscovery(m),
   cineInfo:()=>({ t:+cineT.toFixed(2), focus:+cineFocus.toFixed(3),
@@ -4731,6 +4986,19 @@ window.__yc={ THREE, scene, player, camera, renderer, BIOMES, POIS, heightAt, sa
       instancedTriangles: Math.round(instTri),
     };
   },
+  photoUniforms(){ const u=photoPass?.uniforms; if(!u) return null;
+    return { ev:+u.uExposure.value.toFixed(2), focal:+PHOTO.focal.toFixed(0),
+      fov:+focalToFov(PHOTO.focal).toFixed(1), fstop:+u.uAperture.value.toFixed(2),
+      focus:+u.uFocus.value.toFixed(2), vignette:+u.uVignette.value.toFixed(2),
+      maxBlur:+u.uMaxBlur.value.toFixed(2), taps:u.uTaps.value, look:PHOTO.look,
+      gradeVignette:+(gradePass?.uniforms?.uVignette.value ?? -1).toFixed(2),
+      photoMode, fovCamera:+camera.fov.toFixed(1) }; },
+  depthValid(){ if(!photoDepthRT) return false;
+    // đọc vài pixel giữa khung: nếu toàn 0 thì depth chưa được dựng
+    const buf = new Float32Array(4);
+    try{ renderer.readRenderTargetPixels(photoDepthRT, (photoDepthRT.width/2)|0,
+      (photoDepthRT.height/2)|0, 1, 1, buf); }catch(e){ return 'read-fail:'+e.message; }
+    return { w:photoDepthRT.width, h:photoDepthRT.height, mid:+(buf[0]||0).toFixed(1) }; },
   rendererInfo(){ const i=renderer.info; return { textures:i.memory.textures, geometries:i.memory.geometries,
                  calls:i.render.calls, triangles:i.render.triangles, programs:i.programs?.length ?? null }; },
   env: () => envMeshes.map(e=>({ name:e.name, count:e.count })),

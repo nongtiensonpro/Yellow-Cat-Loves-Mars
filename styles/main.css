@@ -251,3 +251,26 @@ html[data-perf="1"] #hud-perf-pill{ display:inline-flex; }
   .discovery-card{display:grid;grid-template-columns:150px 1fr}
   .discovery-hero{height:100%;min-height:118px}
 }
+
+/* ══ Bảng điều khiển máy ảnh (Task 4.1a) ══ */
+#photo-bar{flex-wrap:wrap;justify-content:center;row-gap:6px;max-width:min(1000px,96vw);
+  background:rgba(12,8,6,.82);backdrop-filter:blur(10px);border:1px solid var(--border);
+  border-radius:16px;padding:10px 14px}
+#photo-looks{display:flex;gap:5px;flex:0 0 auto}
+#photo-looks button{padding:5px 10px;border-radius:999px;font-size:11px;font-weight:800;
+  background:rgba(255,255,255,.06);border:1px solid var(--border);color:rgba(255,255,255,.75);
+  cursor:pointer;transition:background .16s,color .16s}
+#photo-looks button:hover{background:rgba(255,255,255,.13)}
+#photo-looks button[aria-pressed="true"]{background:var(--accent,#e8703a);color:#1a0d06;border-color:transparent}
+#photo-sliders{display:flex;gap:12px;flex-wrap:wrap;justify-content:center;flex:1 1 100%}
+.ps-row{display:flex;align-items:center;gap:6px;font-size:10px;color:rgba(255,255,255,.62);
+  letter-spacing:.04em;white-space:nowrap}
+.ps-row span{min-width:52px}
+.ps-row b{min-width:48px;text-align:right;color:var(--accent,#e8703a);font-size:10px;font-weight:800;
+  font-variant-numeric:tabular-nums}
+.ps-row input[type=range]{width:78px;height:3px;accent-color:var(--accent,#e8703a);cursor:pointer}
+@media (max-width:700px){
+  #photo-sliders{gap:8px}
+  .ps-row span{min-width:44px;font-size:9px}
+  .ps-row input[type=range]{width:56px}
+}

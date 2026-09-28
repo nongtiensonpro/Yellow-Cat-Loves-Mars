@@ -199,7 +199,7 @@ Mỗi Phase có Definition of Done + Task nhỏ (2–5 phút/task, TDD khi có l
 
 ## Phase 4 — Polish, Performance & Launch Readiness
 
-### Task 4.1 — UI polish + photo mode nâng cấp
+### Task 4.1 — UI polish + photo mode nâng cấp  ◑ 4.1a+4.1b xong 27/09/2026 (art-bible §23) · 4.1c (bản đồ) chưa
 **Files:** `index.html`, `styles/main.css`, `app/main.js`
 **Nội dung:** Photo mode: DOF, exposure, focal length, vignette, LUT, pose camera. Map: contour, landmark, route, vùng đã khám phá.
 

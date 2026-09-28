@@ -86,6 +86,16 @@
 <div id="photo-bar">
   <span style="font-size:12px;letter-spacing:0.08em;font-weight:800">📸 PHOTO MODE</span>
   <span style="font-size:11px;color:rgba(255,255,255,0.7)">Kéo chuột xoay · Cuộn zoom · </span>
+  <div id="photo-looks"></div>
+  <div id="photo-sliders">
+    <label class="ps-row"><span>Phơi sáng</span><input type="range" id="ps-ev" min="-2" max="2" step="0.1"><b id="pv-ev">0.0 EV</b></label>
+    <label class="ps-row"><span>Tiêu cự</span><input type="range" id="ps-focal" min="14" max="200" step="1"><b id="pv-focal">35mm</b></label>
+    <label class="ps-row"><span>Khẩu độ</span><input type="range" id="ps-fstop" min="1.4" max="22" step="0.1"><b id="pv-fstop">f/4.0</b></label>
+    <label class="ps-row"><span>Khoảng nét</span><input type="range" id="ps-focus" min="2" max="120" step="0.5"><b id="pv-focus">14m</b></label>
+    <label class="ps-row"><span>Vignette</span><input type="range" id="ps-vig" min="0" max="1" step="0.01"><b id="pv-vig">35%</b></label>
+  </div>
+  <button class="ctrl-btn" id="btn-autofocus" style="width:auto;padding:0 10px;height:32px;border-radius:999px;font-size:11px" title="Lấy nét vào tâm xe">🎯 Nét</button>
+  <button class="ctrl-btn" id="btn-photo-reset" style="width:auto;padding:0 10px;height:32px;border-radius:999px;font-size:11px" title="Về mặc định">↺</button>
   <button class="ctrl-btn" id="btn-shot" style="width:auto;padding:0 12px;height:32px;border-radius:999px;font-size:12px;font-weight:800">Chụp ảnh</button>
   <button class="ctrl-btn" id="btn-photo-exit" style="width:auto;padding:0 12px;height:32px;border-radius:999px;font-size:12px">Thoát (Esc)</button>
 </div>
