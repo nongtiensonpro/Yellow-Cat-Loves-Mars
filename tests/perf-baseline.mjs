@@ -8,8 +8,20 @@ import { chromium } from 'playwright-core';
 import { existsSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-
+// ── TARGET có mặc định + báo lỗi rõ ràng khi server chưa chạy ──
+// Trước đây thiếu TARGET là chết với `url: expected string, got undefined` —
+// thông báo không liên quan gì tới việc thật sự sai.
 const TARGET_URL = process.env.TARGET || 'http://127.0.0.1:4173/';
+try {
+  const r = await fetch(TARGET_URL, { signal: AbortSignal.timeout(4000) });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+} catch (e) {
+  console.error(`✗ Không gọi được ${TARGET_URL} (${e.message})`);
+  console.error('  Khởi động server trước:  node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port 4173');
+  console.error('  Hoặc trỏ sang nơi khác:   TARGET=http://... node tests/<probe>.mjs');
+  process.exit(2);
+}
+
 const SECONDS = Number(process.env.PERF_SECONDS || 12);
 
 const CANDIDATES = [

@@ -207,7 +207,7 @@ Mỗi Phase có Definition of Done + Task nhỏ (2–5 phút/task, TDD khi có l
 **Files:** `assets/textures/`, `vite.config.js`
 **Nội dung:** Nén texture hero 2K/4K → KTX2/Basis, mipmap, kiểm tra memory.
 
-### Task 4.3 — QA checklist + release
+### Task 4.3 — QA checklist + release  ✅ 27/09/2026 (`document/bien-ban-ban-giao-v1.md`)
 **Files:** `document/bien-ban-ban-giao-v*.md`
 **Nội dung:** Checklist: build, smoke, ride probe, offline probe, screenshot trước/sau, perf budget, Pages deploy verify (precache/CORS đã từng vỡ).
 

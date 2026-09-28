@@ -18,6 +18,19 @@
 // ════════════════════════════════════════════════════════════════════════════
 import { chromium } from 'playwright-core';
 import { existsSync, writeFileSync } from 'node:fs';
+// ── TARGET có mặc định + báo lỗi rõ ràng khi server chưa chạy ──
+// Trước đây thiếu TARGET là chết với `url: expected string, got undefined` —
+// thông báo không liên quan gì tới việc thật sự sai.
+const TARGET_URL = process.env.TARGET || 'http://127.0.0.1:4173/';
+try {
+  const r = await fetch(TARGET_URL, { signal: AbortSignal.timeout(4000) });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+} catch (e) {
+  console.error(`✗ Không gọi được ${TARGET_URL} (${e.message})`);
+  console.error('  Khởi động server trước:  node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port 4173');
+  console.error('  Hoặc trỏ sang nơi khác:   TARGET=http://... node tests/<probe>.mjs');
+  process.exit(2);
+}
 
 export const BUDGET = {
   calls:     { max: 460,   why: 'draw call qua MỌI pass composer' },
@@ -62,7 +75,7 @@ if (import.meta.url === `file:///${process.argv[1].replace(/\\/g,'/')}` || proce
   const TARGET = process.env.TARGET || 'http://127.0.0.1:4173/';
 
   try{
-    await page.goto(TARGET, { waitUntil:'networkidle', timeout:45000 });
+    await page.goto(TARGET_URL, { waitUntil:'networkidle', timeout:45000 });
     await page.click('#btn-start');
     await page.waitForFunction(()=>!!window.__yc, null, {timeout:70000});
     await page.waitForTimeout(6000);

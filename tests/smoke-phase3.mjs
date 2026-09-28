@@ -2,8 +2,20 @@
 import { chromium } from 'playwright-core';
 
 import { existsSync } from 'node:fs';
+// ── TARGET có mặc định + báo lỗi rõ ràng khi server chưa chạy ──
+// Trước đây thiếu TARGET là chết với `url: expected string, got undefined` —
+// thông báo không liên quan gì tới việc thật sự sai.
+const TARGET_URL = process.env.TARGET || 'http://127.0.0.1:4173/';
+try {
+  const r = await fetch(TARGET_URL, { signal: AbortSignal.timeout(4000) });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+} catch (e) {
+  console.error(`✗ Không gọi được ${TARGET_URL} (${e.message})`);
+  console.error('  Khởi động server trước:  node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port 4173');
+  console.error('  Hoặc trỏ sang nơi khác:   TARGET=http://... node tests/<probe>.mjs');
+  process.exit(2);
+}
 
-const URL = process.env.TARGET || 'http://127.0.0.1:5176/';
 
 // Trình duyệt: ưu tiên Edge/Chrome đã cài sẵn trên máy (chạy nhanh, có GPU).
 // Trên CI Linux không có sẵn -> để playwright-core tự dùng Chromium do
@@ -28,7 +40,7 @@ page.on('console', m => { if (m.type() === 'error') errors.push('CONSOLE: ' + m.
 page.on('response', r => { if (r.status() >= 400) errors.push('HTTP ' + r.status() + ' ' + r.url()); });
 
 console.log('goto', URL);
-await page.goto(URL, { waitUntil: 'networkidle', timeout: 45000 });
+await page.goto(TARGET_URL, { waitUntil: 'networkidle', timeout: 45000 });
 
 await page.waitForSelector('#loading.out', { timeout: 15000 });
 console.log('instant landing OK (loader hidden — boot is static)');
