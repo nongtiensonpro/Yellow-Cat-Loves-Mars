@@ -155,3 +155,76 @@ không được deploy**.
 Trước khi tăng trần, hãy trả lời: ngân sách đang bảo vệ điều gì? Tăng trần để
 cho một thay đổi hợp lý qua là tốt. Tăng trần để một thay đổi *không* ai nghĩ
 tới là mất hết ý nghĩa của cả hệ thống.
+
+---
+
+# Ngân sách texture — Task 4.2
+
+## Kết luận trước: KHÔNG dùng KTX2/Basis, và đây là lý do
+
+Kế hoạch ghi *"nén texture hero 2K/4K → KTX2/Basis"*. Đo thật thì trong dự án
+**không có texture 2K nào, cũng không có texture nào từ file**.
+
+Đo bằng `tests/_probe_tex.mjs` trên scene thật:
+
+| | số |
+|---|---|
+| tổng texture | 61 |
+| tổng bộ nhớ | 22.71 MB |
+| **nguồn: sinh lúc chạy từ `<canvas>`** | **61 / 61 (100%)** |
+| từ file | **0** |
+| kích thước có trong scene | `512² · 256² · 64²` |
+| texture ≥ 1K | 0 |
+
+KTX2/Basis nén **file** texture. Ở đây không có file nào để nén: pixel được
+**tính lúc chạy** bởi mã procedural, vẽ vào `<canvas>`, rồi bọc bằng
+`CanvasTexture`. Cơ chế nén file không có gì để nén.
+
+Thêm `KTX2Loader` + Basis transcoder còn tệ hơn: thêm khoảng 500 KB wasm+js vào
+bundle để giải mã… không có gì, đồng thời thêm một đường giải mã có thể hỏng và
+một phụ thuộc phải bundle cục bộ cho PWA offline.
+
+**Đây là kết luận hợp lệ dựa trên số đo, không phải bỏ sót.** Nếu sau này có
+texture lấy từ file (ảnh chụp NASA, atlas thủ công…), hãy đo lại rồi mới quyết.
+
+## Phần "mipmap" của Task 4.2: đã đúng sẵn, giờ được canh giữ
+
+| | kết quả |
+|---|---|
+| texture sinh chuỗi mip | 61 / 61 |
+| **texture thực sự DÙNG chuỗi mip** | **61 / 61** |
+| bộ nhớ mip sinh ra mà không dùng | **0 MB** |
+| `minFilter` | toàn bộ là `MipmapLinearFilter` |
+| texture dùng chung cho nhiều mesh | 46 / 61 |
+
+Bản đồ địa hình 512² (`map` / `normalMap` / `roughnessMap`) dùng chung cho
+**192 mesh** (64 chunk × 3 LOD) — không nhân bản.
+
+### Lỗi mà guard này bắt
+
+Đặt `generateMipmaps = true` nhưng để `minFilter = LinearFilter`. Đây là một
+trong những lỗi lãng phí **im lặng** đắt nhất:
+
+- vẫn cấp phát ~4/3 bộ nhớ cho cả chuỗi mip
+- rồi **không dùng tới** — mỗi pixel lấy từ tầng 0
+- mặt đất **rung/rét ở xa** vì không lọc mip
+- không có triệu chứng nào khác. FPS vẫn đẹp, không đỏ, không đụng.
+
+`gpuBudget()` giờ đếm `mipWastedMB`; `perf-budget.mjs` đặt trần **= 0**, nên ai
+đó thêm texture sai kiểu thì CI đỏ ngay.
+
+**Đã chứng minh detector bắt được:** cố tình đặt `minFilter = LinearFilter` lên 3
+texture 512² → báo đúng `4 MB / 3 chiếc` (trước đó là `0 MB / 0`).
+
+## Trần texture
+
+| hạng mục | hiện tại | trần |
+|---|---|---|
+| số texture | 61 | 80 |
+| bộ nhớ texture | 22.71 MB | 32 MB |
+| texture ≥ 1K | 0 | 0 |
+| **mip bị lãng phí** | **0 MB** | **0 MB** |
+
+Cột "texture ≥ 1K" bằng 0 là có chủ đích: hiện dùng bản đồ 512² cho địa hình vạt
+rộng. Nâng lên 1K chỉ đáng khi đo thấy địa hình vạt bị rõ. Khi đó trần phải được
+mở **cùng lúc** với ngân sách bộ nhớ — không mở trần rồi hy vọng vẫn ổn.

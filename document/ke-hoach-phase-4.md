@@ -85,8 +85,7 @@ Việc cần làm thật:
   thêm KTX2/Basis decoder chỉ để tiết kiệm vài MB là đánh đổi âm
 - siết mipmap + `anisotropy` cho texture mặt đất vạt
 
-Có thể kết luận "không cần KTX2" nếu đo thấy không đáng — đó là kết luận hợp lệ,
-không phải thất bại.
+**ĐÃ KẾT LUẬN 27/09/2026: không cần KTX2.** Đo được 100% texture sinh lúc chạy từ canvas, 0 texture từ file, không có 2K/4K. Mipmap 61/61 dùng thật, lãng phí 0 MB. Đã thêm guard `mipWastedMB` phải = 0.
 
 ---
 

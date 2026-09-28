@@ -203,7 +203,7 @@ Mỗi Phase có Definition of Done + Task nhỏ (2–5 phút/task, TDD khi có l
 **Files:** `index.html`, `styles/main.css`, `app/main.js`
 **Nội dung:** Photo mode: DOF, exposure, focal length, vignette, LUT, pose camera. Map: contour, landmark, route, vùng đã khám phá.
 
-### Task 4.2 — KTX2/Basis + mipmap + texture budget
+### Task 4.2 — KTX2/Basis + mipmap + texture budget  ✅ 27/09/2026 (perf-budget.md, art-bible §25) — **kết luận: không cần KTX2, đo được 100% texture sinh lúc chạy, 0 texture từ file**
 **Files:** `assets/textures/`, `vite.config.js`
 **Nội dung:** Nén texture hero 2K/4K → KTX2/Basis, mipmap, kiểm tra memory.
 

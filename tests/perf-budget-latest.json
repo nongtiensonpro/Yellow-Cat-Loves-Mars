@@ -23,6 +23,10 @@
     "geometries": {
       "max": 560,
       "why": "geometry đang còn trong bộ nhớ"
+    },
+    "mipWastedMB": {
+      "max": 0,
+      "why": "bộ nhớ mip sinh ra mà không dùng (phải = 0)"
     }
   },
   "measured": {
@@ -39,14 +43,20 @@
       "biggest": "(không tên) 512×512",
       "biggestMB": 1.33,
       "instancedCount": 4575,
-      "instancedTriangles": 64550
+      "instancedTriangles": 64550,
+      "n2k": 0,
+      "n4k": 0,
+      "allRuntimeCanvas": 61,
+      "sharedTextures": 46,
+      "mipWastedMB": 0,
+      "mipWastedCount": 0
     },
     "medium": {
       "nm": "spawn     ",
       "textures": 61,
-      "geometries": 490,
-      "calls": 352,
-      "triangles": 98457,
+      "geometries": 489,
+      "calls": 353,
+      "triangles": 98472,
       "programs": 40,
       "textureMB": 22.71,
       "n1024": 0,
@@ -54,12 +64,18 @@
       "biggest": "(không tên) 512×512",
       "biggestMB": 1.33,
       "instancedCount": 4575,
-      "instancedTriangles": 64550
+      "instancedTriangles": 64550,
+      "n2k": 0,
+      "n4k": 0,
+      "allRuntimeCanvas": 61,
+      "sharedTextures": 46,
+      "mipWastedMB": 0,
+      "mipWastedCount": 0
     },
     "high": {
       "nm": "spawn     ",
       "textures": 61,
-      "geometries": 494,
+      "geometries": 493,
       "calls": 367,
       "triangles": 98472,
       "programs": 41,
@@ -69,12 +85,18 @@
       "biggest": "(không tên) 512×512",
       "biggestMB": 1.33,
       "instancedCount": 4575,
-      "instancedTriangles": 64550
+      "instancedTriangles": 64550,
+      "n2k": 0,
+      "n4k": 0,
+      "allRuntimeCanvas": 61,
+      "sharedTextures": 46,
+      "mipWastedMB": 0,
+      "mipWastedCount": 0
     },
     "cinematic": {
       "nm": "spawn     ",
       "textures": 61,
-      "geometries": 494,
+      "geometries": 493,
       "calls": 368,
       "triangles": 98473,
       "programs": 42,
@@ -84,9 +106,15 @@
       "biggest": "(không tên) 512×512",
       "biggestMB": 1.33,
       "instancedCount": 4575,
-      "instancedTriangles": 64550
+      "instancedTriangles": 64550,
+      "n2k": 0,
+      "n4k": 0,
+      "allRuntimeCanvas": 61,
+      "sharedTextures": 46,
+      "mipWastedMB": 0,
+      "mipWastedCount": 0
     }
   },
   "errors": [],
-  "checkedAt": "2026-09-28T04:09:54.743Z"
+  "checkedAt": "2026-09-28T08:46:28.556Z"
 }

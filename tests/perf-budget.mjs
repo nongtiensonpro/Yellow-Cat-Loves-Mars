@@ -26,6 +26,10 @@ export const BUDGET = {
   textures:  { max: 80,    why: 'số texture GPU' },
   textureMB: { max: 32,    why: 'bộ nhớ texture ước tính' },
   geometries:{ max: 560,   why: 'geometry đang còn trong bộ nhớ' },
+  // Task 4.2. KHÔNG được > 0: đó là chuỗi mip đã cấp phát (~4/3 bộ nhớ) nhưng
+  // minFilter không thuộc nhóm Mipmap* nên không dùng tới. Mất bộ nhớ + mặt
+  // đất rung ở xa, mà không có triệu chứng nào khác để phát hiện.
+  mipWastedMB: { max: 0,   why: 'bộ nhớ mip sinh ra mà không dùng (phải = 0)' },
 };
 
 const PLACES = [
@@ -88,11 +92,18 @@ if (import.meta.url === `file:///${process.argv[1].replace(/\\/g,'/')}` || proce
     const over=[];
     for (const [k, r] of Object.entries(BUDGET)){
       const worst = Object.values(measured).reduce((a,c)=> (c[k]??0)>(a[k]??0) ? c : a);
-      const v = worst[k] ?? 0, pct = (v/r.max*100).toFixed(0);
+      const v = worst[k] ?? 0, pct = r.max ? (v/r.max*100).toFixed(0)+'%' : '0';
       const bad = v > r.max;
       if (bad) over.push(`${k}=${v} > ${r.max}`);
       console.log(`  ${bad?'✗ VƯỢT':'✓'} ${k.padEnd(10)} ${String(v).padStart(8)} / ${String(r.max).padStart(8)}  (${pct}%)  ${r.why}`);
     }
+    // Báo cáo texture — cơ sở của kết luận "không cần KTX2" (Task 4.2)
+    const tex = Object.values(measured)[0];
+    console.log('\n  texture: ' + tex.textures + ' chiếc · ' + tex.textureMB + ' MB · ' +
+      (tex.allRuntimeCanvas===tex.textures ? '100% sinh lúc chạy' : tex.allRuntimeCanvas + '/' + tex.textures + ' sinh lúc chạy'));
+    console.log('  · texture dùng chung: ' + tex.sharedTextures + '/' + tex.textures +
+      ' · texture ≥1K: ' + (tex.n2k + tex.n4k) +
+      ' · mip bị lãng phí: ' + tex.mipWastedMB + ' MB');
     if (errs.length) console.log(`\n  ✗ ${errs.length} lỗi runtime: ${errs.slice(0,3).join(' | ')}`);
 
     writeFileSync('tests/perf-budget-latest.json', JSON.stringify({

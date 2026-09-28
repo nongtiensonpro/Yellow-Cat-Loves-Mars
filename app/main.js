@@ -5140,16 +5140,19 @@ window.__yc={ THREE, scene, player, camera, renderer, BIOMES, POIS, heightAt, sa
    */
   gpuBudget(){
     const seen = new Map();
+    let allRuntime = 0;
     const bump = (t)=>{
-      if (!t || seen.has(t.uuid)) return;
+      if (!t) return;
+      if (seen.has(t.uuid)){ seen.get(t.uuid).uses++; return; }
       const img = t.image;
+      if (t.isCanvasTexture || (img && img.nodeName === 'CANVAS')) allRuntime++;
       const w = img?.width  || 0, h = img?.height || 0;
-      if (!w || !h){ seen.set(t.uuid, { w:0, h:0, bytes:0, name:t.name||'' }); return; }
+      if (!w || !h){ seen.set(t.uuid, { w:0, h:0, bytes:0, name:t.name||'', mip:false, minFilter:t.minFilter, uses:1 }); return; }
       // RGBA = 4 byte/kênh; HalfFloat = 2 byte/kênh -> gấp đôi
       const half = (t.type === THREE.HalfFloatType);
       const mip  = t.generateMipmaps !== false;
       const bytes = w*h*(half?8:4)*(mip?4/3:1);
-      seen.set(t.uuid, { w, h, bytes, half, name:t.name||'' });
+      seen.set(t.uuid, { w, h, bytes, half, name:t.name||'', mip, minFilter:t.minFilter, uses:1 });
     };
     scene.traverse(o=>{
       const mats = o.material ? (Array.isArray(o.material)?o.material:[o.material]) : [];
@@ -5162,10 +5165,21 @@ window.__yc={ THREE, scene, player, camera, renderer, BIOMES, POIS, heightAt, sa
         }
       }
     });
+    // Chuỗi mip CHỈ được dùng nếu minFilter thuộc nhóm Mipmap*
+    // (1008 MipmapLinear · 1009 LinearMipmapNearest · 1010 · 1011).
+    // Đặt generateMipmaps=true nhưng minFilter=LinearFilter là một trong những
+    // lỗi lãng phí im lặng đắt nhất: vẫn cấp phát ~4/3 bộ nhớ cho chuỗi mip,
+    // rồi KHÔNG dùng — đồng thời mặt đất rung/rét ở xa vì không lọc mip.
+    const MIP_FILTERS = [1008, 1009, 1010, 1011];
     let bytes = 0, n2k = 0, n4k = 0, n1k = 0, biggest = null, bigBytes = 0;
+    let wastedMip = 0, wastedCount = 0, shared = 0;
     for (const t of seen.values()){
       bytes += t.bytes;
       if (t.w >= 2048) n2k++; else if (t.w >= 1024) n1k++;
+      if (t.mip && !MIP_FILTERS.includes(t.minFilter)){
+        wastedMip += t.bytes; wastedCount++;
+      }
+      if (t.uses > 1) shared++;
       if (t.bytes > bigBytes){ bigBytes = t.bytes; biggest = t; }
     }
     // instanced: draw call = 1 cho cả lũ, tam giác thì nhân với count
@@ -5184,6 +5198,12 @@ window.__yc={ THREE, scene, player, camera, renderer, BIOMES, POIS, heightAt, sa
       geometries: renderer.info.memory.geometries,
       instancedCount: instanced,
       instancedTriangles: Math.round(instTri),
+      // Task 4.2 — bằng chứng cho kết luận "không cần KTX2"
+      n2k, n4k,
+      allRuntimeCanvas: allRuntime,
+      sharedTextures: shared,
+      mipWastedMB: +(wastedMip/1048576).toFixed(2),
+      mipWastedCount: wastedCount,
     };
   },
   photoUniforms(){ const u=photoPass?.uniforms; if(!u) return null;

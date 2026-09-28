@@ -976,3 +976,21 @@ Góc trên trái có thanh tiến độ **ĐÃ KHÁM PHÁ %** kèm số điểm 
 đã đi. Đo được: lái xong **263 ô (21%)**, giữ nguyên sau khi đóng/mở lại bản đồ.
 
 Độ dài route lưu mỗi 4 s (`saveFoot`), không ghi `localStorage` mỗi khung.
+
+## 25. Texture budget — vì sao KHÔNG có KTX2 (Task 4.2, 27/09/2026)
+
+Đo: 61 texture · 22.71 MB · **100% sinh lúc chạy từ `<canvas>`** · **0 texture từ
+file** · kích thước chỉ `512² · 256² · 64²` · không có 2K/4K nào.
+
+KTX2/Basis nén file texture. Không có file nào ở đây — pixel được *tính* lúc
+chạy. Thêm Basis transcoder (~500 KB) là thêm chi phí để nén không gì.
+
+Mipmap: 61/61 sinh chuỗi, **61/61 dùng thật**, lãng phí **0 MB**. Bản đồ địa hình
+512² dùng chung cho **192 mesh**.
+
+Guard mới: `mipWastedMB` phải bằng **0**. Bắt lỗi `generateMipmaps=true` +
+`minFilter=LinearFilter` — cấp phát 4/3 bộ nhố mip rồi không dùng, mặt đất rung ở
+xa, mà không có triệu chứng nào khác. Đã chứng minh bắt được: phá 3 texture →
+báo `4 MB / 3 chiếc`.
+
+Chi tiết và số liệu: `document/perf-budget.md`.
