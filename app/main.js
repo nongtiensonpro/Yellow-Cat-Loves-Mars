@@ -2583,6 +2583,7 @@ let camYaw=0.6, camPitch=0.28, camDist=10;
 let isDragging=false, lastX=0, lastY=0;
 
 const _camTmp=new THREE.Vector3(), _camFwd=new THREE.Vector3(), _camLook=new THREE.Vector3();
+const _cineAim=new THREE.Vector3();
 
 // camera KHÔNG được chui xuống đất: nâng lên nếu thấp hơn mặt đất tại vị trí đó
 function keepCamAboveGround(min=1.2){
@@ -2729,6 +2730,13 @@ function updateCamera(dt){
     _camLook.y = playerPos.y + (O ? O.ly : (isRover ? -2.60 : (upH - 1.75)));
     // Nghiêng theo góc lái -> cảm giác vào cua
     _camLook.addScaledVector(right, steerVis * 2.2);
+    // KHOẢNH KHẮC KHÁM PHÁ (Task 3.6): trộn hướng nhìn về phía POI. Camera chỉ ĐỌC
+    // cineFocus, không tự tính — khoảnh khắc sở hữu trọng số, camera sở hữu phép
+    // áp nó lên hướng nhìn.
+    if(cineFocus > 0.001 && cineTarget){
+      _cineAim.set(cineTarget.pos.x, sampleHeight(cineTarget.pos.x, cineTarget.pos.z)+2.2, cineTarget.pos.z);
+      _camLook.lerp(_cineAim, THREE.MathUtils.clamp(cineFocus,0,1)*0.85);
+    }
     camera.lookAt(_camLook);
   } else {
     const r=camDist;
@@ -2764,9 +2772,14 @@ function updateCamera(dt){
     keepCamAboveGround(1.4);
     // Nhìn về phía trước một chút theo hướng ĐÃ TRỄ, không nhìn thẳng vào xe:
     // nhìn thẳng vào tâm xe làm khung hình đứng yên khi xe rẽ.
-    camera.lookAt(playerPos.x + Math.cos(_camYawLag)*1.6,
-                  sampleHeight(playerPos.x, playerPos.z)+1.0,
-                  playerPos.z + Math.sin(_camYawLag)*1.6);
+    _camLook.set(playerPos.x + Math.cos(_camYawLag)*1.6,
+                 sampleHeight(playerPos.x, playerPos.z)+1.0,
+                 playerPos.z + Math.sin(_camYawLag)*1.6);
+    if(cineFocus > 0.001 && cineTarget){
+      _cineAim.set(cineTarget.pos.x, sampleHeight(cineTarget.pos.x, cineTarget.pos.z)+2.2, cineTarget.pos.z);
+      _camLook.lerp(_cineAim, THREE.MathUtils.clamp(cineFocus,0,1)*0.85);
+    }
+    camera.lookAt(_camLook);
   }
 }
 // ---------- Heightfield: đọc CHÍNH mesh đang vẽ (nguồn sự thật duy nhất) ----------
@@ -3504,6 +3517,151 @@ function nearestPOI(x,z){
   for(const p of POIS){ const d=Math.hypot(x-p.pos.x, z-p.pos.z); if(d<bd){ bd=d; best=p; } }
   return { poi:best, dist:bd };
 }
+// ════════════════════════════════════════════════════════════════════════════
+// DISCOVERY CINEMATIC — Phase 3 Task 3.6
+//
+// Trước đây đến POI là overlay bật lên ngẫu nhiên giữa đường: không có âm
+// thanh, không có gì ở trong thế giới 3D, không có nhịp. Người chơi vừa đang
+// lái thì bị một hộp thoại chặn ngang.
+//
+// Nay mỗi lần khám phá là một MỘT KHOẢNH KHÔNG GIAN dài ~2.6s:
+//   0.00s  chuông chạm   · hạt bụi bật lên tại POI · camera bắt đầu quay
+//   0.35s  thẻ trượt vào từ dưới
+//   0.90s  POI được đánh dấu khám phá (ngay khi thẻ hiện, không phải khi đóng)
+//   2.60s  hết khoảnh khắc
+//
+// NHỊP: mỗi 30–60s một lần. Discovery là món ăn chứ không phải đồ ăn vặt —
+// nếu cứ vài giây một cái thì nó thành nhiễu và người chơi sẽ tắt luôn.
+//
+// SỞ HỮU: `cineT`/`cineTarget`/`cineFocus` chỉ gán trong đây. Camera chỉ ĐỌC
+// `cineFocus` (Task 3.5) và áp nó như một trọng số thêm lên hướng nhìn.
+// ════════════════════════════════════════════════════════════════════════════
+const CINE_DUR = 2.6;
+let cineT = -1;              // -1 = không chạy
+let cineTarget = null;       // POI đang khám phá
+let cineFocus = 0;           // 0..1 — trọng số camera nhìn sang POI
+let cineCooldown = 12;       // chờ lần đầu sau khi bắt đầu chơi
+let cineBurst = null;
+
+// ---- 1. HẠT BỤI BẬT LÊN TẠI POI ----------------------------------------
+// Một pool Points dùng lại cho mọi lần khám phá: 1 draw call, không cấp phát
+// trong lúc chơi. Hạt bay lên trên rồi tụt, tắt dần — trông như bụi bị nâng lên
+// bởi điều gì đó vừa xảy ra.
+const BURST_N = 220;
+function makeBurst(){
+  const pos = new Float32Array(BURST_N*3);
+  const vel = new Float32Array(BURST_N*3);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const m = new THREE.PointsMaterial({
+    size: 0.55, color: 0xffd98a, transparent: true, opacity: 0,
+    depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true,
+  });
+  const p = new THREE.Points(g, m);
+  p.frustumCulled = false;
+  p.visible = false;
+  return { p, pos, vel, g, m, life: 0 };
+}
+function fireBurst(x, y, z){
+  if (!cineBurst) cineBurst = makeBurst();
+  const b = cineBurst, gy = sampleHeight(x, z);
+  for (let i=0;i<BURST_N;i++){
+    const a = Math.random()*Math.PI*2, r = Math.random()*3.2;
+    b.pos[i*3  ] = x + Math.cos(a)*r;
+    b.pos[i*3+1] = gy + 0.2 + Math.random()*1.2;
+    b.pos[i*3+2] = z + Math.sin(a)*r;
+    b.vel[i*3  ] = Math.cos(a)*(0.9+Math.random()*2.2);
+    b.vel[i*3+1] = 1.9 + Math.random()*4.4;      // chủ yếu đi lên
+    b.vel[i*3+2] = Math.sin(a)*(0.9+Math.random()*2.2);
+  }
+  b.g.attributes.position.needsUpdate = true;
+  b.life = 1; b.p.visible = true; b.m.opacity = 1;
+}
+function updateBurst(dt){
+  if (!cineBurst || cineBurst.life <= 0) return;
+  const b = cineBurst;
+  b.life -= dt/2.2;
+  if (b.life <= 0){ b.life = 0; b.p.visible = false; b.m.opacity = 0; return; }
+  for (let i=0;i<BURST_N;i++){
+    b.vel[i*3+1] -= 4.2*dt;                    // trọng lực
+    b.vel[i*3  ] *= (1 - 0.9*dt);
+    b.vel[i*3+2] *= (1 - 0.9*dt);
+    b.pos[i*3  ] += b.vel[i*3  ]*dt;
+    b.pos[i*3+1] += b.vel[i*3+1]*dt;
+    b.pos[i*3+2] += b.vel[i*3+2]*dt;
+  }
+  b.g.attributes.position.needsUpdate = true;
+  b.m.opacity = Math.max(0, Math.min(1, b.life)) * 0.9;
+}
+
+// ---- 2. CHUÔNG CHẠM --------------------------------------------------------
+// Tổng hợp trực tiếp bằng Web Audio, không cần file âm thanh. Ba nốt hợp âm
+// ngũ cung (A4–C#5–E5) cộng một nốt trầm bên dưới: nghe như "tìm ra thứ gì
+// đó" mà vẫn giữ chất thanh nhẹ của cả game.
+function discoveryChime(){
+  const ac = ensureAudio();
+  if (!ac || !audioMaster) return;
+  const t0 = ac.currentTime + 0.02;
+  const notes = [440, 554.37, 659.25, 220];
+  notes.forEach((f, i)=>{
+    const o = ac.createOscillator();
+    o.type = i===3 ? 'sine' : 'triangle';
+    o.frequency.value = f;
+    const g = ac.createGain();
+    const st = t0 + i*0.075;
+    g.gain.setValueAtTime(0, st);
+    g.gain.linearRampToValueAtTime(i===3 ? 0.16 : 0.10, st + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, st + 1.5);
+    o.connect(g); g.connect(audioMaster);
+    o.start(st); o.stop(st + 1.6);
+  });
+}
+
+// ---- 3. KHOẢNH KHẮC --------------------------------------------------------
+function startDiscoveryCine(poi){
+  cineT = 0;
+  cineTarget = poi;
+  discoveryChime();
+  fireBurst(poi.pos.x, 0, poi.pos.z);
+  // Phải đổ DỮ LIỆU vào thẻ. Bản đầu chỉ bỏ class 'hidden' mà quên gọi
+  // openDiscovery() -> thẻ hiện nguyên văn chữ sỗi: "Tiêu đề", "Fact",
+  // "Mèo nói…". Chỉ lộ ra khi CHỤP ẢNH — đọc DOM thì thấy phase đúng, nội dung
+  // sai hoàn toàn không ai để ý.
+  openDiscovery(poi);
+  // thẻ trượt vào sau một nhịp — vào ngay lập tức thì không kịp nhìn thấy nổ
+  const el = document.getElementById('overlay-discovery');
+  el.dataset.poi = poi.id;
+  el.dataset.phase = 'beat';
+  setTimeout(()=>{ if (cineT >= 0) el.dataset.phase = 'in'; }, 350);
+  // Đánh dấu khám phá NGAY khi thẻ hiện, không đợi đóng. Đóng mà không lưu
+  // thì người chơi mất thẻ mà không hề biết.
+  setTimeout(()=>{
+    if (!discovered.has(poi.id)){ discovered.add(poi.id); save(); renderJournalCards(); updateJournal(); updatePWAStatus(); }
+  }, 900);
+}
+/** Đưa pool hạt vào scene. Gọi một lần lúc khởi tạo. */
+function attachBurst(){
+  if (!cineBurst) cineBurst = makeBurst();
+  if (!cineBurst.p.parent) scene.add(cineBurst.p);
+}
+function updateDiscoveryCine(dt){
+  if (cineT < 0) return;
+  cineT += dt;
+  // trọng số camera: lên nhanh 0.25s, giữ, xuống 0.5s
+  if (cineT < 0.25)      cineFocus = cineT/0.25;
+  else if (cineT < 1.9)  cineFocus = 1;
+  else if (cineT < 2.6)  cineFocus = 1 - (cineT-1.9)/0.7;
+  else {
+    cineFocus = 0; cineT = -1; cineTarget = null;
+    const el = document.getElementById('overlay-discovery');
+    el.classList.add('hidden');
+    el.dataset.phase = '';
+    cineCooldown = 30 + Math.random()*30;   // 30–60 giây
+  }
+  // nhịp lặp lại cho tới hết khoảnh khắc
+  if (cineT > 0.95 && cineT - dt <= 0.95 && cineTarget) fireBurst(cineTarget.pos.x, 0, cineTarget.pos.z);
+}
+
 function openDiscovery(poi){
   document.getElementById('d-icon').textContent=poi.icon;
   document.getElementById('d-title').textContent=poi.title;
@@ -3517,6 +3675,11 @@ function openDiscovery(poi){
 function closeDiscovery(markRead){
   const pid=overlayDiscovery.dataset.poi;
   overlayDiscovery.classList.add('hidden');
+  overlayDiscovery.dataset.phase='';
+  // Đóng giữa chừng thì khoảnh khắc kết thúc luôn — nếu không, camera cứ nhìn
+  // về POI thêm 2.6s sau khi người chơi đã đóng, trông như lỗi.
+  cineT = -1; cineFocus = 0; cineTarget = null;
+  cineCooldown = 30 + Math.random()*30;
   if(markRead && pid && !discovered.has(pid)){
     discovered.add(pid);
     save();
@@ -4006,16 +4169,15 @@ function frame(now){
   updateDust(dt, stormLevel, Math.min(1, speedKmh/55), atmoDust);
   updateDustOnCar(dt);          // Task 3.3: bụi bám trên sơn theo quãng đường
 
-  // Phase 3: POI discovery
-  if(!overlayDiscovery.classList.contains('hidden')===false){
+  // Phase 3: POI discovery — chạy khoảnh khắc cinematic (Task 3.6)
+  if (cineT < 0 && cineCooldown > 0) cineCooldown -= dt;
+  updateDiscoveryCine(dt);
+  updateBurst(dt);
+  if (cineT < 0 && !photoMode){
     const near = nearestPOI(playerPos.x, playerPos.z);
-    if(near.poi && near.dist < 28 && !discovered.has(near.poi.id) && poiCooldown<=0){
-      openDiscovery(near.poi);
-      poiCooldown=4.0;
+    if(near.poi && near.dist < 26 && !discovered.has(near.poi.id) && cineCooldown<=0){
+      startDiscoveryCine(near.poi);
     }
-    if(poiCooldown>0) poiCooldown -= dt;
-  } else {
-    if(poiCooldown>0) poiCooldown -= dt;
   }
   maybeStorm(now);
   // Phase 3: audio + stars + journal
@@ -4073,7 +4235,7 @@ let loadP=0;
 const loadIv=setInterval(()=>{
   loadP=Math.min(100, loadP+ (Math.random()*30+34));
   loadBar.style.width=loadP+'%'; loadPct.textContent=Math.round(loadP)+'%';
-  if(loadP>=100){ clearInterval(loadIv); hideLoading(); applyTime(); setVehicle(vehicleType); updateHint(); updateJournalPhase3(); drawMini(); drawBigMap(); renderJournalCards(); requestAnimationFrame(frame); }
+  if(loadP>=100){ clearInterval(loadIv); hideLoading(); applyTime(); setVehicle(vehicleType); attachBurst(); updateHint(); updateJournalPhase3(); drawMini(); drawBigMap(); renderJournalCards(); requestAnimationFrame(frame); }
 }, 55);
 loadText.textContent='Đang dựng đồng bằng Arcadia và đánh thức Mèo Vàng...';
 
@@ -4437,7 +4599,15 @@ window.__yc={ THREE, scene, player, camera, renderer, BIOMES, POIS, heightAt, sa
   // đọc __yc.renderer.info là undefined. Chỉ thêm tên chưa có.
   composer:()=>composer, postFXOn:()=>postEnabled, HF:()=>HF,
   sunScreen:()=>_sunScreen,
-  camMode:()=>camMode, focusOn:()=>!!(focusPass&&focusPass.enabled), camFovNow:()=>_fovNow, camDist:()=>camDist, speedKmh:()=>speedKmh,
+  camMode:()=>camMode, focusOn:()=>!!(focusPass&&focusPass.enabled),
+  discoveredCount:()=>discovered.size,
+  closeDiscovery:(m)=>closeDiscovery(m),
+  cineInfo:()=>({ t:+cineT.toFixed(2), focus:+cineFocus.toFixed(3),
+    target: cineTarget? cineTarget.id : null, cooldown:+cineCooldown.toFixed(1),
+    burst: !!cineBurst, burstVisible: !!(cineBurst&&cineBurst.p.visible),
+    burstLife: cineBurst? +cineBurst.life.toFixed(3):0,
+    phase: document.getElementById('overlay-discovery').dataset.phase || '' }),
+  startCine:(id)=>{ const p = POIS.find(q=>q.id===id); if(p) startDiscoveryCine(p); return !!p; }, camFovNow:()=>_fovNow, camDist:()=>camDist, speedKmh:()=>speedKmh,
   camChaseTau:()=>CAM_CHASE_TAU, chaseK:()=>_lastChaseK, lastDt:()=>_lastDt,
   camInfo:()=>({ fov:+camera.fov.toFixed(2), baseFov:CAM_BASE_FOV,
     yawLag:+_camYawLag.toFixed(4), yawErr:+((playerYaw-_camYawLag)*180/Math.PI).toFixed(2),

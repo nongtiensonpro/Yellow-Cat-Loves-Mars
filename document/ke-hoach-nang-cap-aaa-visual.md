@@ -187,7 +187,7 @@ Mỗi Phase có Definition of Done + Task nhỏ (2–5 phút/task, TDD khi có l
 **Files:** `app/main.js` (updateCamera)
 **Nội dung:** Framing theo tốc độ (FOV động khi boost), lag có kiểm soát, va chạm địa hình, rung nhẹ khi bánh chạm đất, DOF nhẹ ở photo mode.
 
-### Task 3.6 — Discovery presentation cinematic
+### Task 3.6 — Discovery presentation cinematic  ✅ 27/09/2026 (art-bible §21)
 **Files:** `app/main.js`, `assets/audio/` nếu cần
 **Nội dung:** Đến landmark: âm thanh + particle burst + camera focus + journal card animation. Mỗi 30–60s có moment.
 

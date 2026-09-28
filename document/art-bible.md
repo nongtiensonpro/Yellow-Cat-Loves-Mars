@@ -721,3 +721,68 @@ tên, không phải lỗi cú pháp.
 
 Quy tắc: **mọi tham số dùng bên trong hàm phải nằm trong chữ ký hoặc khai báo
 ở module scope.** `now` là tham số của `frame()` nên không thuộc phạm vi đó.
+
+## 21. Discovery cinematic (Task 3.6, 2026-09-27)
+
+Trước đây đến POI là overlay bật lên ngẫu nhiên giữa đường: không có âm thanh,
+không có gì ở trong thế giới 3D, không có nhịp. Người chơi vừa đang lái thì bị
+một hộp thoại chặn ngang.
+
+### 21.1 Trình tự 2.6 giây
+
+| thời điểm | việc |
+|---|---|
+| `0.00s` | chuông chạm · hạt bụi bật lên tại POI · camera bắt đầu quay |
+| `0.35s` | thẻ trượt vào từ dưới |
+| `0.90s` | POI **được đánh dấu khám phá** · hạt bật thêm một lần |
+| `1.90s` | camera bắt đầu trả lại |
+| `2.60s` | hết khoảnh khắc · cooldown mới |
+
+Đánh dấu khám phá ở `0.90s` chứ không đợi đóng: đóng mà không lưu thì người
+chơi mất thẻ mà không hề biết.
+
+### 21.2 NHỊP: 30–60 giây
+
+`cineCooldown = 30 + Math.random()*30` sau mỗi lần. Discovery là **món ăn, không
+phải đồ ăn vặt** — cứ vài giây một cái thì nó thành nhiễu và người chơi sẽ tắt
+luôn. Bản cũ dùng `poiCooldown = 4.0` và bán kính 28m.
+
+### 21.3 Thẻ phải là thanh dưới, KHÔNG được che kín màn hình
+
+Bản đầu dùng chung class `.overlay` — fullscreen + `backdrop-filter: blur(2px)`.
+Hạt bụi bật lên nằm ngay **sau** lớp phủ đó, nên khoảnh khắc mà cả hệ thống cố
+tạo ra **không hề nhìn thấy**.
+
+Giờ `#overlay-discovery` là panel dưới: nền gradient trong suốt ở 26% trên, thẻ
+trượt lên từ dưới, `pointer-events:none` trên nền để vẫn tương tác được thế giới.
+Ở màn rộng ≥760px chuyển sang bố cục ngang (ảnh 150px · thân nội dung) để thẻ
+thấp, chừa nhiều cảnh. Đo được: thẻ chiếm ~35% chiều cao ở 1280×720.
+
+### 21.4 Bug lớn nhất: quên đổ dữ liệu vào thẻ
+
+`startDiscoveryCine()` bỏ class `hidden` nhưng **không gọi `openDiscovery()`** —
+thẻ hiện nguyên văn chữ sỗi: *"Tiêu đề"*, *"Fact"*, *"Mèo nói…"*.
+
+Chỉ lộ ra khi **chụp ảnh**. Probe đọc DOM thấy `phase` đúng, `focus` đúng, 0 lỗi
+console — mà nội dung thẻ sai hoàn toàn. Không có assertion nào bắt được, vì
+đây không phải lỗi kỹ thuật, chỉ là **quên một lệnh gọi**.
+
+Bài học chung cho toàn dự án: nhiều lỗi nghiêm trọng nhất từng gặp đều **không
+đỏ, không đụng, không sai số** — chúng chỉ sai khi nhìn. Số đo chỉ bắt được phần
+có số; mắt bắt được phần còn lại.
+
+### 21.5 Hạt và âm thanh
+
+Hạt: một pool `Points` 220 hạt dùng lại cho mọi lần khám phá — 1 draw call, không
+cấp phát trong lúc chơi, gắn vào scene một lần lúc boot. Hạt bay lên rồi tụt với
+trọng lực 4.2, ma sát ngang, tắt dần trong 2.2s.
+
+Chuông: tổng hợp trực tiếp bằng Web Audio, không cần file âm thanh. Bốn nốt
+`A4–C#5–E5–A3` (hợp âm ngũ cung) với envelope 1.5s. Nốt trầm ở cuối cho trọng lượng.
+
+Sở hữu: `cineT` / `cineTarget` / `cineFocus` chỉ gán trong hệ cinematic. Camera
+chỉ **đọc** `cineFocus` và áp nó như trọng số thêm lên hướng nhìn (Task 3.5).
+Đóng thẻ giữa chừng sẽ hủy khoảnh khắc ngay — không thì camera cứ nhìn về POI
+thêm 2.6s sau khi người chơi đã đóng, trông như lỗi.
+
+Có `prefers-reduced-motion`: tắt toàn bộ animation thẻ.
